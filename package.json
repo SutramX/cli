@@ -1,0 +1,35 @@
+{
+  "name": "@sutramx/cli",
+  "version": "0.1.0",
+  "description": "SutramX command line: manage uptime monitors and keep them in code with sutramx.yml (plan / diff / apply).",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "sutramx": "dist/index.js"
+  },
+  "main": "dist/index.js",
+  "files": [
+    "dist",
+    "README.md",
+    "examples"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc && node -e \"require('fs').chmodSync('dist/index.js', 0o755)\"",
+    "dev": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test tests/*.test.ts"
+  },
+  "dependencies": {
+    "commander": "^14.0.0",
+    "yaml": "^2.8.0",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.7.0"
+  }
+}

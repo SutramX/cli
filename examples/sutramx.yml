@@ -1,0 +1,63 @@
+# A fuller example: monitors, a status page and a Slack channel.
+# Run with: SLACK_WEBHOOK_URL=... sutramx plan -f examples/sutramx.yml
+version: 1
+
+defaults:
+  interval_seconds: 60
+  tags: [prod]
+
+settings:
+  prune: true            # delete keyed monitors removed from this file
+  adopt_by_name: false
+
+monitors:
+  - key: web/home
+    name: Website
+    url: https://www.example.com
+    regions: [bom, sin, fra]
+    config:
+      keyword: Example Domain
+
+  - key: api/health
+    name: Public API
+    type: api
+    url: https://api.example.com/v1/health
+    interval_seconds: 30
+    config:
+      method: GET
+      expected_status_codes: [200]
+      headers:
+        Accept: application/json
+
+  - key: infra/postgres
+    name: Postgres
+    type: port
+    config:
+      host: db.example.com
+      port: 5432
+
+  - key: jobs/nightly-report
+    name: Nightly report job
+    type: cron
+    config:
+      cron_expression: "30 1 * * *"
+
+status_pages:
+  - slug: example-status
+    title: Example status
+    description: Live status of Example's website and API.
+    is_public: true
+    show_response_times: true
+    monitors:
+      - web/home
+      - key: api/health
+        section: API
+
+integrations:
+  - name: Ops alerts
+    type: slack
+    config:
+      webhook_url: ${SLACK_WEBHOOK_URL}
+    routing:
+      scope: monitors
+      monitors: [web/home, api/health]

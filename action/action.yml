@@ -1,0 +1,84 @@
+name: SutramX monitors as code
+description: Plan or apply a sutramx.yml against your SutramX workspace.
+author: SutramX
+branding:
+  icon: activity
+  color: green
+
+inputs:
+  command:
+    description: "plan, diff or apply"
+    required: false
+    default: plan
+  file:
+    description: Path to the configuration file
+    required: false
+    default: sutramx.yml
+  api-key:
+    description: SutramX API key (store it as a repository secret)
+    required: true
+  api-url:
+    description: API base URL (only for self-hosted or staging)
+    required: false
+    default: https://api.sutramx.com
+  prune:
+    description: "true deletes keyed monitors that are not in the file; empty uses settings.prune"
+    required: false
+    default: ""
+  cli-version:
+    description: Version of @sutramx/cli to run
+    required: false
+    default: latest
+
+outputs:
+  has-changes:
+    description: "'true' when the plan has changes (plan/diff), or apply changed something"
+    value: ${{ steps.run.outputs.has-changes }}
+  plan:
+    description: Plain-text plan or apply output
+    value: ${{ steps.run.outputs.plan }}
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 22
+
+    - id: run
+      shell: bash
+      # Inputs are passed through the environment, never interpolated into the script.
+      env:
+        SUTRAMX_API_KEY: ${{ inputs.api-key }}
+        SUTRAMX_API_URL: ${{ inputs.api-url }}
+        INPUT_COMMAND: ${{ inputs.command }}
+        INPUT_FILE: ${{ inputs.file }}
+        INPUT_PRUNE: ${{ inputs.prune }}
+        INPUT_CLI_VERSION: ${{ inputs.cli-version }}
+        NO_COLOR: "1"
+      run: |
+        set -uo pipefail
+        case "$INPUT_COMMAND" in plan|diff|apply) ;; *) echo "command must be plan, diff or apply" >&2; exit 1 ;; esac
+        args=("$INPUT_COMMAND" --file "$INPUT_FILE")
+        if [ "$INPUT_PRUNE" = "true" ]; then args+=(--prune); elif [ "$INPUT_PRUNE" = "false" ]; then args+=(--no-prune); fi
+        if [ "$INPUT_COMMAND" = "apply" ]; then args+=(--auto-approve); else args+=(--detailed-exitcode); fi
+        out="$(mktemp)"
+        npx --yes "@sutramx/cli@${INPUT_CLI_VERSION}" "${args[@]}" 2>&1 | tee "$out"
+        code=${PIPESTATUS[0]}
+        has_changes=false
+        if [ "$INPUT_COMMAND" != "apply" ] && [ "$code" -eq 2 ]; then has_changes=true; code=0; fi
+        if [ "$INPUT_COMMAND" = "apply" ] && grep -q "^✓" "$out"; then has_changes=true; fi
+        delimiter="sutramx_$(openssl rand -hex 8)"
+        {
+          echo "has-changes=$has_changes"
+          echo "plan<<$delimiter"
+          cat "$out"
+          echo "$delimiter"
+        } >> "$GITHUB_OUTPUT"
+        {
+          echo "### sutramx $INPUT_COMMAND"
+          echo '```'
+          cat "$out"
+          echo '```'
+        } >> "$GITHUB_STEP_SUMMARY"
+        exit "$code"
