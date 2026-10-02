@@ -9,6 +9,7 @@ import {
     RemoteConnection,
     RemoteStatusPage,
     resolvePageMonitors,
+    redactIntegration,
     resolveRouting,
     StatusPageChange,
 } from './reconcile.js';
@@ -71,7 +72,7 @@ async function loadStatusPages(api: SutramXApi, manifest: Manifest): Promise<Rem
     if (!manifest.status_pages?.length) return [];
     const pages = await api.get<RemoteStatusPage[]>('/status/pages/me');
     const declared = new Set(manifest.status_pages.map((page) => page.slug));
-    return Promise.all(pages.map(async (page) => (declared.has(page.slug) ? api.get<RemoteStatusPage>(`/status/pages/${page.id}`) : page)));
+    return Promise.all(pages.map(async (page) => (declared.has(page.slug) ? api.get<RemoteStatusPage>(`/status/pages/${encodeURIComponent(page.id)}`) : page)));
 }
 
 async function loadConnections(api: SutramXApi, manifest: Manifest): Promise<RemoteConnection[]> {
@@ -126,6 +127,14 @@ export async function buildPlan(api: SutramXApi, manifest: Manifest, options: Re
         warnings: [...(monitorPlan.warnings || []), ...warningsFor(statusPages, integrations)],
         blockers,
         hasChanges,
+    };
+}
+
+/** The plan for --json output: integration secrets from the file are masked. */
+export function redactedPlan(plan: WorkspacePlan): WorkspacePlan {
+    return {
+        ...plan,
+        integrations: plan.integrations.map((change) => (change.desired ? { ...change, desired: redactIntegration(change.desired) } : change)),
     };
 }
 
@@ -197,13 +206,13 @@ export async function applyPlan(
         }
         try {
             if (change.action === 'delete') {
-                await api.delete(`/integrations/connections/${change.id}`);
+                await api.delete(`/integrations/connections/${encodeURIComponent(String(change.id))}`);
             } else {
                 const integration = change.desired!;
                 const { routing } = resolveRouting(integration.routing, resolver);
                 const body = { ...integration.config, name: integration.name, routing };
                 if (change.action === 'create') await api.post(`/integrations/${encodeURIComponent(integration.type)}/connections`, body);
-                else await api.put(`/integrations/connections/${change.id}`, body);
+                else await api.put(`/integrations/connections/${encodeURIComponent(String(change.id))}`, body);
             }
             record({ kind: 'integration', action: change.action, label, status: 'applied' });
         } catch (error) {
@@ -238,20 +247,20 @@ export async function applyPlan(
             if (change.action === 'create') {
                 patch.slug = page.slug;
                 try {
-                    await api.patch(`/status/pages/${id}`, patch);
+                    await api.patch(`/status/pages/${encodeURIComponent(String(id))}`, patch);
                 } catch (error) {
                     // Pages are matched by slug: one left with a generated slug
                     // would be created again on every apply.
-                    await api.delete(`/status/pages/${id}`).catch(() => undefined);
+                    await api.delete(`/status/pages/${encodeURIComponent(String(id))}`).catch(() => undefined);
                     throw error;
                 }
             } else if (Object.keys(patch).length) {
-                await api.patch(`/status/pages/${id}`, patch);
+                await api.patch(`/status/pages/${encodeURIComponent(String(id))}`, patch);
             }
             if (page.monitors !== undefined && (change.action === 'create' || change.changes.some((diff) => diff.field === 'monitors'))) {
                 const { entries } = resolvePageMonitors(page, resolver);
                 const monitors = entries.filter((entry) => entry.monitor_id).map((entry) => ({ monitor_id: entry.monitor_id!, section: entry.section }));
-                await api.put(`/status/pages/${id}/monitors`, { monitors });
+                await api.put(`/status/pages/${encodeURIComponent(String(id))}/monitors`, { monitors });
             }
             record({ kind: 'status_page', action: change.action, label: change.slug, status: 'applied' });
         } catch (error) {

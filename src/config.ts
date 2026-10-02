@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { DEFAULT_API_URL, SutramXApi } from './api.js';
@@ -26,8 +26,17 @@ export function readCredentials(env: NodeJS.ProcessEnv = process.env): StoredCre
     const path = credentialsPath(env);
     if (!existsSync(path)) return null;
     try {
+        if (process.platform !== 'win32' && (statSync(path).mode & 0o077) !== 0) {
+            process.stderr.write(`Warning: ${path} is readable by other users; run \`chmod 600 ${path}\`.\n`);
+        }
         const parsed = JSON.parse(readFileSync(path, 'utf8'));
-        return parsed && typeof parsed.api_key === 'string' ? parsed : null;
+        if (!parsed || typeof parsed !== 'object' || typeof parsed.api_key !== 'string') return null;
+        // Only the known fields: nothing else from the file is trusted.
+        return {
+            api_key: parsed.api_key,
+            ...(typeof parsed.api_url === 'string' ? { api_url: parsed.api_url } : {}),
+            ...(typeof parsed.workspace_id === 'string' ? { workspace_id: parsed.workspace_id } : {}),
+        };
     } catch {
         return null;
     }
@@ -36,8 +45,23 @@ export function readCredentials(env: NodeJS.ProcessEnv = process.env): StoredCre
 export function writeCredentials(credentials: StoredCredentials, env: NodeJS.ProcessEnv = process.env): string {
     const path = credentialsPath(env);
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-    writeFileSync(path, `${JSON.stringify(credentials, null, 2)}\n`, { mode: 0o600 });
-    chmodSync(path, 0o600);
+    // Written to a fresh temp file (O_EXCL: never follows a planted symlink)
+    // and renamed over the target, so the key is never in a file that is or
+    // was readable by others.
+    const temp = `${path}.${process.pid}.${Date.now()}.tmp`;
+    const fd = openSync(temp, 'wx', 0o600);
+    try {
+        writeSync(fd, `${JSON.stringify(credentials, null, 2)}\n`);
+    } finally {
+        closeSync(fd);
+    }
+    chmodSync(temp, 0o600);
+    try {
+        if (lstatSync(path).isSymbolicLink()) rmSync(path);
+    } catch {
+        // does not exist yet
+    }
+    renameSync(temp, path);
     return path;
 }
 

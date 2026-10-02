@@ -128,3 +128,13 @@ npm run build
 npm test
 node dist/index.js --help
 ```
+
+## Security guardrails
+
+- **API URL**: `--api-url` / `SUTRAMX_API_URL` must be `https://` (plain `http://` only for `localhost`). A warning is printed when the key is sent to a host outside `sutramx.com`, or when `NODE_TLS_REJECT_UNAUTHORIZED=0` disables certificate checks. Redirects are never followed.
+- **Key handling**: prefer `echo "$KEY" | sutramx login` or the hidden prompt over `--api-key` (visible in `ps` and shell history). The credentials file is written `0600` via an exclusive temp file and rename (a symlink at the path is replaced, not followed); a warning is printed if it becomes readable by others.
+- **`${VAR}` in sutramx.yml**: the file may not read `SUTRAMX_API_KEY`, `SUTRAMX_CONFIG`, `GITHUB_TOKEN`, `GH_TOKEN`, `ACTIONS_*`, `INPUT_*`, `NPM_TOKEN`, `NODE_AUTH_TOKEN`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `CI_JOB_TOKEN`, `CI_JOB_JWT*` or `SYSTEM_ACCESSTOKEN`, so a pull request cannot copy credentials into a monitor or into the plan comment. Set `SUTRAMX_ALLOWED_ENV="SLACK_*,PAGERDUTY_KEY"` to allow only the listed variables.
+- **Plan output**: integration config values whose names look like credentials (`*url*`, `*token*`, `*secret*`, `*key*`, ...) are shown as `(secret, not shown)` in `plan`, `diff` and `--json`.
+- **Mass deletes**: `apply` with prune refuses to delete every managed monitor when the file declares none (an empty or truncated file); pass `--allow-delete-all` if that is intended.
+- **Retries**: 429 answers are retried (honouring `Retry-After`, at most 4 attempts); 502/503/504 and network errors are retried only for GET/PUT/DELETE.
+- **GitHub Action**: the key is masked with `::add-mask::`, `cli-version` must be a registry version or tag, and inputs reach the script only through environment variables. Pin `cli-version` to an exact version in production.

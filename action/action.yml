@@ -26,7 +26,7 @@ inputs:
     required: false
     default: ""
   cli-version:
-    description: Version of @sutramx/cli to run
+    description: Version of @sutramx/cli to run (pin an exact version such as 0.1.0 in production; "latest" follows every release)
     required: false
     default: latest
 
@@ -58,6 +58,12 @@ runs:
         NO_COLOR: "1"
       run: |
         set -uo pipefail
+        # Masked even when the key does not come from a repository secret.
+        if [ -n "${SUTRAMX_API_KEY:-}" ]; then echo "::add-mask::${SUTRAMX_API_KEY}"; fi
+        # Only a registry version or tag: no file:, git+ or URL specs.
+        if ! printf '%s' "$INPUT_CLI_VERSION" | grep -Eq '^(latest|next|[0-9]+(\.[0-9]+){0,2}(-[0-9A-Za-z.-]+)?)$'; then
+          echo "cli-version must be latest, next or a version like 0.1.0" >&2; exit 1
+        fi
         case "$INPUT_COMMAND" in plan|diff|apply) ;; *) echo "command must be plan, diff or apply" >&2; exit 1 ;; esac
         args=("$INPUT_COMMAND" --file "$INPUT_FILE")
         if [ "$INPUT_PRUNE" = "true" ]; then args+=(--prune); elif [ "$INPUT_PRUNE" = "false" ]; then args+=(--no-prune); fi

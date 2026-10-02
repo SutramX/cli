@@ -146,6 +146,22 @@ export function matchesMasked(desired: string, shown: unknown): boolean {
     return desired.endsWith(tail) && (!prefix || desired.startsWith(prefix));
 }
 
+const SECRET_FIELD = /url|token|secret|key|password|passwd|webhook|auth|dsn|credential/i;
+
+/** Integration config values are credentials more often than not: never print them. */
+export function displayConfigValue(field: string, value: string, shown: unknown): string {
+    if (typeof shown === 'string' && shown.includes('…')) return '(new secret)';
+    return SECRET_FIELD.test(field) ? '(secret, not shown)' : value;
+}
+
+/** Copy of a declared integration with config values masked, for plan output. */
+export function redactIntegration(integration: ManifestIntegration): ManifestIntegration {
+    return {
+        ...integration,
+        config: Object.fromEntries(Object.entries(integration.config).map(([field, value]) => [field, displayConfigValue(field, String(value), undefined) === String(value) ? value : '(secret, not shown)'])),
+    };
+}
+
 /** The routing body the API expects, from manifest routing (monitor keys resolved). */
 export interface RoutingBody {
     scope: 'all' | 'monitors';
@@ -185,7 +201,7 @@ export function planIntegrations(
             const desiredValue = String(value);
             if (!matchesMasked(desiredValue, current.config?.[field])) {
                 const shown = current.config?.[field];
-                changes.push({ field: `config.${field}`, from: shown ?? null, to: typeof shown === 'string' && shown.includes('…') ? '(new secret)' : desiredValue });
+                changes.push({ field: `config.${field}`, from: shown ?? null, to: displayConfigValue(field, desiredValue, shown) });
             }
         }
         const currentScope = current.routing?.scope || 'all';

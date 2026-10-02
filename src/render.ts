@@ -10,6 +10,16 @@ export const cyan = paint(36);
 export const bold = paint(1);
 export const dim = paint(2);
 
+/**
+ * Server data (monitor names, errors) printed to a terminal: drop control
+ * characters so a stored ANSI/OSC escape cannot rewrite the screen, the
+ * window title or the clipboard.
+ */
+export function clean(text: unknown): string {
+    // eslint-disable-next-line no-control-regex
+    return String(text ?? '').replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, '');
+}
+
 const SYMBOL: Record<string, string> = {
     create: green('+'),
     update: yellow('~'),
@@ -20,8 +30,8 @@ const SYMBOL: Record<string, string> = {
 
 function value(input: unknown): string {
     if (input === null || input === undefined) return dim('(default)');
-    if (typeof input === 'string') return JSON.stringify(input);
-    const text = JSON.stringify(input);
+    if (typeof input === 'string') return clean(JSON.stringify(input));
+    const text = clean(JSON.stringify(input));
     return text.length > 120 ? `${text.slice(0, 117)}...` : text;
 }
 
@@ -35,7 +45,7 @@ function monitorLines(changes: MonitorChange[], detailed: boolean, showNoop: boo
     for (const change of changes) {
         if (change.action === 'noop' && !showNoop) continue;
         const adopted = change.adopted ? dim(' (adopting existing monitor)') : '';
-        lines.push(`  ${SYMBOL[change.action]} ${change.action.padEnd(7)} ${bold(change.key)} ${dim(`"${change.name}" [${change.type}]`)}${adopted}`);
+        lines.push(`  ${SYMBOL[change.action]} ${change.action.padEnd(7)} ${bold(clean(change.key))} ${dim(`"${clean(change.name)}" [${clean(change.type)}]`)}${adopted}`);
         lines.push(...fieldLines(change.changes, detailed));
         if (change.action === 'replace') lines.push(`      ${red('type cannot change in place: the monitor is deleted (with its history) and created again')}`);
     }
@@ -46,7 +56,7 @@ function pageLines(changes: StatusPageChange[], detailed: boolean, showNoop: boo
     const lines: string[] = [];
     for (const change of changes) {
         if (change.action === 'noop' && !showNoop) continue;
-        lines.push(`  ${SYMBOL[change.action]} ${change.action.padEnd(7)} ${bold(change.slug)} ${dim(`"${change.title}"`)}`);
+        lines.push(`  ${SYMBOL[change.action]} ${change.action.padEnd(7)} ${bold(clean(change.slug))} ${dim(`"${clean(change.title)}"`)}`);
         lines.push(...fieldLines(change.changes, detailed));
     }
     return lines;
@@ -56,7 +66,7 @@ function integrationLines(changes: IntegrationChange[], detailed: boolean, showN
     const lines: string[] = [];
     for (const change of changes) {
         if (change.action === 'noop' && !showNoop) continue;
-        lines.push(`  ${SYMBOL[change.action]} ${change.action.padEnd(7)} ${bold(`${change.type}/${change.name}`)}`);
+        lines.push(`  ${SYMBOL[change.action]} ${change.action.padEnd(7)} ${bold(clean(`${change.type}/${change.name}`))}`);
         lines.push(...fieldLines(change.changes, detailed));
     }
     return lines;
@@ -80,8 +90,8 @@ export function renderPlan(plan: WorkspacePlan, options: { detailed?: boolean; s
     section('Monitors', monitorLines(plan.monitors.changes, detailed, showNoop));
     section('Status pages', pageLines(plan.statusPages, detailed, showNoop));
     section('Integrations', integrationLines(plan.integrations, detailed, showNoop));
-    for (const warning of plan.warnings) out.push(yellow(`Warning: ${warning}`));
-    for (const blocker of plan.blockers || []) out.push(red(`Error: ${blocker}`));
+    for (const warning of plan.warnings) out.push(yellow(`Warning: ${clean(warning)}`));
+    for (const blocker of plan.blockers || []) out.push(red(`Error: ${clean(blocker)}`));
     if (plan.warnings.length || plan.blockers?.length) out.push('');
     if (!plan.hasChanges) {
         out.push(green('No changes. SutramX matches the configuration.'));
@@ -94,12 +104,14 @@ export function renderPlan(plan: WorkspacePlan, options: { detailed?: boolean; s
 
 export function renderStep(step: StepResult): string {
     const kind = step.kind.replace('_', ' ');
+    step = { ...step, label: clean(step.label), error: step.error === undefined ? undefined : clean(step.error) };
     if (step.status === 'applied') return `${green('✓')} ${step.action} ${kind} ${bold(step.label)}`;
     if (step.status === 'skipped') return `${dim('·')} ${step.action} ${kind} ${step.label} ${dim('(skipped after an earlier failure)')}`;
     return `${red('✗')} ${step.action} ${kind} ${bold(step.label)}: ${step.error}`;
 }
 
 export function table(rows: string[][], headers: string[]): string {
+    rows = rows.map((row) => row.map(clean));
     const widths = headers.map((header, index) => Math.max(header.length, ...rows.map((row) => (row[index] || '').length)));
     const line = (cells: string[]) => cells.map((cell, index) => (cell || '').padEnd(widths[index])).join('  ').trimEnd();
     return [bold(line(headers)), ...rows.map(line)].join('\n');

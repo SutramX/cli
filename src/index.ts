@@ -7,9 +7,9 @@ import { ApiError, describeError, SutramXApi } from './api.js';
 import { apiFromEnvironment, credentialsPath, NotLoggedInError, removeCredentials, resolveAuth, writeCredentials } from './config.js';
 import { exportMonitors, SAMPLE_MANIFEST } from './exportManifest.js';
 import { loadManifest, ManifestError } from './manifest.js';
-import { bold, cyan, dim, green, red, renderPlan, renderStep, table, yellow } from './render.js';
+import { bold, clean, cyan, dim, green, red, renderPlan, renderStep, table, yellow } from './render.js';
 import { VERSION } from './version.js';
-import { applyPlan, buildPlan, effectiveOptions, PlanOptions } from './workspace.js';
+import { applyPlan, buildPlan, effectiveOptions, PlanOptions, redactedPlan } from './workspace.js';
 
 /** Exit codes: 0 ok / no changes, 1 error, 2 changes present (plan --detailed-exitcode). */
 
@@ -78,15 +78,16 @@ async function confirm(question: string): Promise<boolean> {
 
 program.command('login')
     .description('Save an API key (create one in SutramX → Settings → API keys)')
-    .option('--api-key <key>', 'API key (otherwise read from a hidden prompt or stdin)')
+    .option('--api-key <key>', 'API key (avoid: visible in shell history and `ps`; prefer the prompt or stdin)')
     .action(async (options: { apiKey?: string; }) => {
         const apiUrl = (program.opts() as GlobalOptions).apiUrl;
+        if (options.apiKey) process.stderr.write(yellow('Warning: --api-key is visible to other local users (ps) and in shell history. Prefer `echo "$KEY" | sutramx login` or the prompt.\n'));
         const key = (options.apiKey || await readSecret('SutramX API key (sk_...): ')).trim();
         if (!key.startsWith('sk_')) throw new Error('SutramX API keys start with "sk_".');
         const client = new SutramXApi(key, apiUrl || resolveAuth({ apiUrl })?.apiUrl);
         const me = await client.get<Record<string, any>>('/automation/whoami');
         const path = writeCredentials({ api_key: key, ...(apiUrl ? { api_url: apiUrl } : {}), workspace_id: me.workspace_id });
-        stdout.write(`${green('Logged in')} to workspace ${bold(me.workspace_id)} (${me.plan} plan, ${me.api_key_access} access). Saved to ${path}\n`);
+        stdout.write(`${green('Logged in')} to workspace ${bold(clean(me.workspace_id))} (${clean(me.plan)} plan, ${clean(me.api_key_access)} access). Saved to ${path}\n`);
     });
 
 program.command('logout')
@@ -131,10 +132,23 @@ monitors.command('list').alias('ls')
     });
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const MONITOR_KEY = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/;
+
+function requireUuid(value: string, label: string): string {
+    if (!UUID.test(value)) throw new InvalidArgumentError(`${label} must be a UUID`);
+    return value;
+}
 
 /** GET path for a monitor given its id or its sutramx.yml key. */
 function monitorPath(idOrKey: string): string {
-    return UUID.test(idOrKey) ? `/monitors/${idOrKey}` : `/automation/monitors/${encodeURIComponent(idOrKey)}`;
+    if (UUID.test(idOrKey)) return `/monitors/${idOrKey}`;
+    if (!MONITOR_KEY.test(idOrKey)) throw new Error('Expected a monitor id (UUID) or key (letters, digits and . _ : / -, up to 128 characters).');
+    return `/automation/monitors/${encodeURIComponent(idOrKey)}`;
+}
+
+/** Monitor ids returned by the API, before they go into a path. */
+function monitorId(monitor: Record<string, any>): string {
+    return requireUuid(String(monitor?.id), 'monitor id');
 }
 
 monitors.command('get <idOrKey>')
@@ -184,15 +198,16 @@ monitors.command('create')
         let monitor: Record<string, any>;
         let action = 'created';
         if (options.key) {
+            if (!MONITOR_KEY.test(options.key)) throw new Error('--key: letters, digits and . _ : / - (1-128 characters, starting with a letter or digit)');
             const result = await client.put<{ action: string; monitor: Record<string, any>; }>(`/automation/monitors/${encodeURIComponent(options.key)}`, { ...body, ...(options.paused ? { paused: true } : {}) });
             monitor = result.monitor;
             action = result.action;
         } else {
             monitor = await client.post('/monitors', body);
-            if (options.paused) monitor = await client.post(`/monitors/${monitor.id}/pause`);
+            if (options.paused) monitor = await client.post(`/monitors/${monitorId(monitor)}/pause`);
         }
         if (options.json) return printJson({ action, monitor });
-        stdout.write(`${green(action)} ${bold(monitor.name)} (${monitor.id})\n`);
+        stdout.write(`${green(action)} ${bold(clean(monitor.name))} (${clean(monitor.id)})\n`);
     });
 
 monitors.command('delete <idOrKey>').alias('rm')
@@ -201,11 +216,11 @@ monitors.command('delete <idOrKey>').alias('rm')
     .action(async (idOrKey: string, options: { yes?: boolean; }) => {
         const client = api();
         const monitor = await client.get<Record<string, any>>(monitorPath(idOrKey));
-        if (!options.yes && !(await confirm(`Delete ${bold(monitor.name)} and its check history?`))) {
+        if (!options.yes && !(await confirm(`Delete ${bold(clean(monitor.name))} and its check history?`))) {
             throw new Error('Not deleted (pass --yes to skip the prompt in scripts).');
         }
-        await client.delete(`/monitors/${monitor.id}`);
-        stdout.write(`${red('deleted')} ${monitor.name} (${monitor.id})\n`);
+        await client.delete(`/monitors/${monitorId(monitor)}`);
+        stdout.write(`${red('deleted')} ${clean(monitor.name)} (${clean(monitor.id)})\n`);
     });
 
 for (const verb of ['pause', 'resume'] as const) {
@@ -213,17 +228,19 @@ for (const verb of ['pause', 'resume'] as const) {
         .description(verb === 'pause' ? 'Stop checking a monitor (by id or key)' : 'Resume a paused monitor (by id or key)')
         .action(async (idOrKey: string) => {
             const client = api();
-            const id = UUID.test(idOrKey) ? idOrKey : (await client.get<Record<string, any>>(monitorPath(idOrKey))).id;
+            const id = UUID.test(idOrKey) ? idOrKey : monitorId(await client.get<Record<string, any>>(monitorPath(idOrKey)));
             const monitor = await client.post<Record<string, any>>(`/monitors/${id}/${verb}`);
-            stdout.write(`${verb === 'pause' ? 'paused' : 'resumed'} ${bold(monitor.name)} (${id})\n`);
+            stdout.write(`${verb === 'pause' ? 'paused' : 'resumed'} ${bold(clean(monitor.name))} (${id})\n`);
         });
 }
 
 monitors.command('adopt <id> <key>')
     .description('Give an existing monitor a key so sutramx.yml manages it')
     .action(async (id: string, key: string) => {
+        requireUuid(id, 'id');
+        if (!MONITOR_KEY.test(key)) throw new Error('key: letters, digits and . _ : / - (1-128 characters, starting with a letter or digit)');
         const monitor = await api().put<Record<string, any>>(`/automation/monitors/by-id/${id}/key`, { key });
-        stdout.write(`${bold(monitor.name)} is now managed as ${cyan(key)}\n`);
+        stdout.write(`${bold(clean(monitor.name))} is now managed as ${cyan(key)}\n`);
     });
 
 program.command('regions')
@@ -243,14 +260,16 @@ program.command('init')
     .option('--force', 'overwrite an existing file')
     .action(async (options: { file: string; fromWorkspace?: boolean; force?: boolean; }) => {
         if (existsSync(options.file) && !options.force) throw new Error(`${options.file} already exists (use --force to overwrite).`);
+        // 'wx' also refuses a dangling symlink planted at the path.
+        const flag = options.force ? 'w' : 'wx';
         if (!options.fromWorkspace) {
-            writeFileSync(options.file, SAMPLE_MANIFEST);
+            writeFileSync(options.file, SAMPLE_MANIFEST, { flag });
             stdout.write(`Wrote ${options.file}. Edit it, then run ${bold('sutramx plan')}.\n`);
             return;
         }
         const list = await api().get<any[]>('/monitors');
         const { yaml, adopted, duplicateNames } = exportMonitors(list);
-        writeFileSync(options.file, yaml);
+        writeFileSync(options.file, yaml, { flag });
         stdout.write(`Wrote ${options.file} with ${list.length} monitors${adopted ? ` (${adopted} will be linked by name on the first apply)` : ''}.\n`);
         if (duplicateNames.length) {
             stdout.write(yellow(`Several monitors share these names, so they cannot be linked by name: ${duplicateNames.join(', ')}. Use \`sutramx monitors adopt <id> <key>\` for them before applying.\n`));
@@ -300,7 +319,7 @@ for (const name of ['plan', 'diff'] as const) {
         .action(async (options: PlanCommandOptions & { detailedExitcode?: boolean; }) => {
             const manifest = loadManifest(options.file);
             const plan = await buildPlan(api(), manifest, effectiveOptions(manifest, flagsFrom(options)));
-            if (options.json) printJson(plan);
+            if (options.json) printJson(redactedPlan(plan));
             else stdout.write(`${renderPlan(plan, { detailed: name === 'diff' })}\n`);
             if (options.detailedExitcode && plan.hasChanges) process.exitCode = 2;
         });
@@ -310,7 +329,8 @@ planFlags(program.command('apply'))
     .description('Make SutramX match the configuration')
     .option('--auto-approve', 'apply without asking (CI)')
     .option('--continue-on-error', 'keep going after a failed change')
-    .action(async (options: PlanCommandOptions & { autoApprove?: boolean; continueOnError?: boolean; }) => {
+    .option('--allow-delete-all', 'allow a prune that deletes every managed monitor (the file declares none)')
+    .action(async (options: PlanCommandOptions & { autoApprove?: boolean; continueOnError?: boolean; allowDeleteAll?: boolean; }) => {
         const manifest = loadManifest(options.file);
         const client = api();
         const effective = effectiveOptions(manifest, flagsFrom(options));
@@ -319,6 +339,11 @@ planFlags(program.command('apply'))
         if (!plan.hasChanges) {
             if (options.json) printJson({ ok: true, changed: false, steps: [] });
             return;
+        }
+        const deletes = plan.monitors.changes.filter((change) => change.action === 'delete').length;
+        if (deletes > 0 && manifest.monitors.length === 0 && !options.allowDeleteAll) {
+            // An empty or truncated file plus prune would wipe the workspace.
+            plan.blockers.push(`the file declares no monitors, so prune would delete all ${deletes} managed monitors; pass --allow-delete-all if that is intended`);
         }
         if (plan.blockers.length) {
             throw new Error(`Nothing was applied:\n${plan.blockers.map((blocker) => `  - ${blocker}`).join('\n')}`);

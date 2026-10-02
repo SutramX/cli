@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 import { parse as parseYaml } from 'yaml';
 import { z } from 'zod';
 
@@ -11,6 +11,7 @@ import { z } from 'zod';
  */
 
 export const MANIFEST_VERSION = 1;
+const MAX_MANIFEST_BYTES = 5 * 1024 * 1024;
 const KEY = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/;
 
 const MonitorSchema = z.object({
@@ -95,10 +96,30 @@ export class ManifestError extends Error {
  * "${VAR}". A missing variable without a default is an error, so a secret is
  * never silently replaced by an empty string.
  */
-export function interpolateEnv(value: unknown, env: NodeJS.ProcessEnv, path = '', missing: string[] = []): unknown {
+/**
+ * Variables a sutramx.yml may never read: a file changed in a pull request
+ * could otherwise copy the CLI's own credential (or CI runner tokens) into a
+ * monitor name/URL, where plan output (PR comments) or a monitored host
+ * would see it.
+ */
+const FORBIDDEN_ENV = /^(SUTRAMX_API_KEY|SUTRAMX_CONFIG|GITHUB_TOKEN|GH_TOKEN|ACTIONS_.*|INPUT_.*|NPM_TOKEN|NODE_AUTH_TOKEN|AWS_SECRET_ACCESS_KEY|AWS_SESSION_TOKEN|CI_JOB_TOKEN|CI_JOB_JWT.*|SYSTEM_ACCESSTOKEN)$/;
+
+/** SUTRAMX_ALLOWED_ENV="A,B,PREFIX_*": only these variables may be referenced (unset: any not forbidden). */
+export function envAllowed(name: string, env: NodeJS.ProcessEnv): boolean {
+    if (FORBIDDEN_ENV.test(name)) return false;
+    const list = (env.SUTRAMX_ALLOWED_ENV || '').split(',').map((item) => item.trim()).filter(Boolean);
+    if (!list.length) return true;
+    return list.some((pattern) => (pattern.endsWith('*') ? name.startsWith(pattern.slice(0, -1)) : name === pattern));
+}
+
+export function interpolateEnv(value: unknown, env: NodeJS.ProcessEnv, path = '', missing: string[] = [], denied: string[] = []): unknown {
     if (typeof value === 'string') {
         return value.replace(/\$?\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}/g, (match, name: string, fallback: string | undefined) => {
             if (match.startsWith('$$')) return match.slice(1);
+            if (!envAllowed(name, env)) {
+                denied.push(`${name} (at ${path || 'root'})`);
+                return '';
+            }
             const resolved = env[name];
             if (resolved !== undefined && resolved !== '') return resolved;
             if (fallback !== undefined) return fallback;
@@ -106,9 +127,9 @@ export function interpolateEnv(value: unknown, env: NodeJS.ProcessEnv, path = ''
             return '';
         });
     }
-    if (Array.isArray(value)) return value.map((item, index) => interpolateEnv(item, env, `${path}[${index}]`, missing));
+    if (Array.isArray(value)) return value.map((item, index) => interpolateEnv(item, env, `${path}[${index}]`, missing, denied));
     if (value && typeof value === 'object') {
-        return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, interpolateEnv(item, env, path ? `${path}.${key}` : key, missing)]));
+        return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, interpolateEnv(item, env, path ? `${path}.${key}` : key, missing, denied)]));
     }
     return value;
 }
@@ -120,13 +141,16 @@ function issuesOf(error: z.ZodError): string[] {
 export function parseManifest(source: string, env: NodeJS.ProcessEnv = process.env): Manifest {
     let raw: unknown;
     try {
-        raw = parseYaml(source);
+        // maxAliasCount bounds YAML alias expansion ("billion laughs").
+        raw = parseYaml(source, { maxAliasCount: 100 });
     } catch (error) {
         throw new ManifestError(`sutramx.yml is not valid YAML: ${(error as Error).message}`);
     }
     if (raw === null || raw === undefined) raw = {};
     const missing: string[] = [];
-    const expanded = interpolateEnv(raw, env, '', missing);
+    const denied: string[] = [];
+    const expanded = interpolateEnv(raw, env, '', missing, denied);
+    if (denied.length) throw new ManifestError('sutramx.yml references environment variables it may not read (credentials, or not in SUTRAMX_ALLOWED_ENV):', denied);
     if (missing.length) throw new ManifestError('Environment variables referenced in sutramx.yml are not set:', missing);
     const parsed = ManifestSchema.safeParse(expanded);
     if (!parsed.success) throw new ManifestError('sutramx.yml is invalid:', issuesOf(parsed.error));
@@ -150,6 +174,7 @@ export function parseManifest(source: string, env: NodeJS.ProcessEnv = process.e
 export function loadManifest(path: string, env: NodeJS.ProcessEnv = process.env): Manifest {
     let source: string;
     try {
+        if (statSync(path).size > MAX_MANIFEST_BYTES) throw new Error(`larger than ${MAX_MANIFEST_BYTES / 1024 / 1024} MB`);
         source = readFileSync(path, 'utf8');
     } catch (error) {
         throw new ManifestError(`Cannot read ${path}: ${(error as NodeJS.ErrnoException).code === 'ENOENT' ? 'file not found (create one with `sutramx init`)' : (error as Error).message}`);
