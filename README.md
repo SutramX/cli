@@ -17,7 +17,7 @@ Node.js 20 or newer is required.
 | `SUTRAMX_API_KEY` (and optionally `SUTRAMX_API_URL`) | set; recommended for CI |
 | `sutramx login` | saves the key to `~/.config/sutramx/credentials.json` (mode 0600; `$XDG_CONFIG_HOME` and `$SUTRAMX_CONFIG` are honoured) |
 
-A key acts on the one workspace it was created in. Keys have one of three access levels, chosen when the key is created: **Read-only** (`whoami`, `monitors list|get`, `regions`, `init --from-workspace`, `plan` and `diff` work; `apply`, `monitors create|pause|resume|delete|adopt` and every other change are refused with `403 READ_ONLY_ACCESS`; use it for CI jobs that only post the plan), **Standard** and **Automation**. A standard key can manage monitors and status pages. To manage **integrations** from `sutramx.yml`, create the key with **Automation access**. Per-monitor alert recipients (`config.notification_emails`) also need an Automation access key; a standard key gets a clear error instead of a change that never applies.
+A key acts on the one workspace it was created in. Keys have one of three access levels, chosen when the key is created: **Read-only** (`whoami`, `monitors list|get`, `incidents list|get`, `maintenance list`, `regions`, `init --from-workspace`, `plan` and `diff` work; `apply`, `monitors create|pause|resume|delete|adopt`, `incidents ack|resolve` and every other change are refused with `403 READ_ONLY_ACCESS`; use it for CI jobs that only post the plan), **Standard** and **Automation**. A standard key can manage monitors and status pages. To manage **integrations** from `sutramx.yml`, create the key with **Automation access**. Per-monitor alert recipients (`config.notification_emails`) also need an Automation access key; a standard key gets a clear error instead of a change that never applies.
 
 ## Commands
 
@@ -31,12 +31,19 @@ A key acts on the one workspace it was created in. Keys have one of three access
 | `sutramx monitors pause|resume <id>` | stop or restart checks |
 | `sutramx monitors delete <id> [--yes]` | delete with its history |
 | `sutramx monitors adopt <id> <key>` | let `sutramx.yml` manage an existing monitor |
+| `sutramx incidents list [--status ongoing] [--monitor <id or key>] [--search t] [--from 2026-10-01] [--to ...] [--page 2] [--page-size 50] [--json]` | incidents, newest first (`--status`: all, ongoing, resolved, acknowledged, suppressed) |
+| `sutramx incidents get <id> [--json]` | one incident (`--json` includes the timeline) |
+| `sutramx incidents ack <id>` | acknowledge an ongoing incident (stops escalation) |
+| `sutramx incidents resolve <id> [--note "what was done"]` | resolve by hand; fails with `409 INCIDENT_RESOLVED` if already resolved |
+| `sutramx maintenance list [--status ongoing] [--json]` | maintenance windows with their scope and recurrence |
 | `sutramx regions` | probe location codes |
 | `sutramx init [--from-workspace]` | write a starter `sutramx.yml`, or one describing what exists now |
 | `sutramx validate` | check the file locally |
 | `sutramx plan [--detailed-exitcode]` | what `apply` would change |
 | `sutramx diff` | the plan with every field shown old -> new |
 | `sutramx apply [--auto-approve] [--continue-on-error]` | make SutramX match the file |
+
+Maintenance windows silence alerts, so creating, changing and deleting them is owner-only: the API refuses every API key (`403 WORKSPACE_OWNER_REQUIRED`), and the CLI only lists them. Manage them in the dashboard.
 
 `plan`, `diff` and `apply` accept `-f <file>`, `--prune` / `--no-prune`, `--adopt-by-name`, `--prune-integrations` and `--json`. With `--detailed-exitcode`, `plan` exits 0 when nothing would change, 2 when something would, 1 on error.
 
@@ -118,7 +125,7 @@ Outputs: `has-changes` and `plan` (the text output). The plan is also written to
 
 ## API used
 
-`GET /automation/whoami`, `POST /automation/monitors/plan`, `POST /automation/monitors/apply`, `GET|PUT|DELETE /automation/monitors/:key`, `PUT /automation/monitors/by-id/:id/key`, plus the regular `/monitors`, `/status/pages`, `/integrations` and `/catalog/regions` endpoints.
+`GET /automation/whoami`, `POST /automation/monitors/plan`, `POST /automation/monitors/apply`, `GET|PUT|DELETE /automation/monitors/:key`, `PUT /automation/monitors/by-id/:id/key`, plus the regular `/monitors`, `/incidents` (list, get, acknowledge, resolve), `/maintenance` (list), `/status/pages`, `/integrations` and `/catalog/regions` endpoints.
 
 ## Development
 

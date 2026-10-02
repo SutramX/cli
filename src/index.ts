@@ -7,6 +7,10 @@ import { ApiError, describeError, SutramXApi } from './api.js';
 import { apiFromEnvironment, credentialsPath, NotLoggedInError, removeCredentials, resolveAuth, writeCredentials } from './config.js';
 import { exportMonitors, SAMPLE_MANIFEST } from './exportManifest.js';
 import { loadManifest, ManifestError } from './manifest.js';
+import {
+    acknowledgeIncident, getIncident, INCIDENT_STATUSES, listIncidents, listMaintenance, MAINTENANCE_STATUSES,
+    renderIncident, renderIncidentTable, renderMaintenanceTable, resolveIncident,
+} from './operations.js';
 import { bold, clean, cyan, dim, green, red, renderPlan, renderStep, table, yellow } from './render.js';
 import { VERSION } from './version.js';
 import { applyPlan, buildPlan, effectiveOptions, PlanOptions, redactedPlan } from './workspace.js';
@@ -241,6 +245,77 @@ monitors.command('adopt <id> <key>')
         if (!MONITOR_KEY.test(key)) throw new Error('key: letters, digits and . _ : / - (1-128 characters, starting with a letter or digit)');
         const monitor = await api().put<Record<string, any>>(`/automation/monitors/by-id/${id}/key`, { key });
         stdout.write(`${bold(clean(monitor.name))} is now managed as ${cyan(key)}\n`);
+    });
+
+function parsePositive(max: number) {
+    return (value: string): number => {
+        const number = Number(value);
+        if (!/^\d+$/.test(value.trim()) || number < 1 || number > max) throw new InvalidArgumentError(`must be a whole number from 1 to ${max}`);
+        return number;
+    };
+}
+
+const incidents = program.command('incidents').alias('incident').description('List, acknowledge and resolve incidents (confirmed outages)');
+
+incidents.command('list').alias('ls')
+    .description('List incidents, newest first')
+    .option('--status <status>', INCIDENT_STATUSES.join(', '), 'all')
+    .option('--monitor <idOrKey>', 'only incidents of this monitor (id or key)')
+    .option('--search <text>', 'search monitor name or URL')
+    .option('--from <time>', 'started at or after (ISO-8601)')
+    .option('--to <time>', 'started at or before (ISO-8601)')
+    .option('--page <n>', 'page number', parsePositive(10_000), 1)
+    .option('--page-size <n>', 'incidents per page (1-100)', parsePositive(100), 25)
+    .option('--json', 'JSON output')
+    .action(async (options: { status: string; monitor?: string; search?: string; from?: string; to?: string; page: number; pageSize: number; json?: boolean; }) => {
+        const client = api();
+        let monitorFilter: string | undefined;
+        if (options.monitor) {
+            monitorFilter = UUID.test(options.monitor) ? options.monitor : monitorId(await client.get<Record<string, any>>(monitorPath(options.monitor)));
+        }
+        const list = await listIncidents(client, { ...options, monitorId: monitorFilter });
+        if (options.json) return printJson(list);
+        stdout.write(`${renderIncidentTable(list)}\n`);
+    });
+
+incidents.command('get <id>')
+    .description('Show one incident')
+    .option('--json', 'JSON output (with the timeline)')
+    .action(async (id: string, options: { json?: boolean; }) => {
+        const { incident, raw } = await getIncident(api(), id);
+        if (options.json) return printJson(raw);
+        stdout.write(`${renderIncident(incident)}\n`);
+    });
+
+incidents.command('ack <id>').alias('acknowledge')
+    .description('Acknowledge an ongoing incident (stops escalation)')
+    .option('--json', 'JSON output')
+    .action(async (id: string, options: { json?: boolean; }) => {
+        const incident = await acknowledgeIncident(api(), id);
+        if (options.json) return printJson({ incident });
+        stdout.write(`${yellow('acknowledged')} incident ${clean(incident.id)} on ${bold(clean(incident.monitor_name))}\n`);
+    });
+
+incidents.command('resolve <id>')
+    .description('Resolve an ongoing incident by hand (incidents also resolve when checks recover)')
+    .option('--note <text>', 'what was done, shown on the incident timeline')
+    .option('--json', 'JSON output')
+    .action(async (id: string, options: { note?: string; json?: boolean; }) => {
+        const incident = await resolveIncident(api(), id, options.note);
+        if (options.json) return printJson({ incident });
+        stdout.write(`${green('resolved')} incident ${clean(incident.id)} on ${bold(clean(incident.monitor_name))}\n`);
+    });
+
+const maintenance = program.command('maintenance').description('Maintenance windows (alerts are silenced while one is active)');
+
+maintenance.command('list').alias('ls')
+    .description('List maintenance windows (creating and deleting them is owner-only, in the dashboard)')
+    .option('--status <status>', `only windows in this state (${MAINTENANCE_STATUSES.join(', ')})`)
+    .option('--json', 'JSON output')
+    .action(async (options: { status?: string; json?: boolean; }) => {
+        const list = await listMaintenance(api(), options.status);
+        if (options.json) return printJson(list);
+        stdout.write(`${renderMaintenanceTable(list)}\n`);
     });
 
 program.command('regions')
