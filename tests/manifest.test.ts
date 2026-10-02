@@ -126,3 +126,13 @@ test('exportMonitors writes keys for every monitor and flags duplicate names', (
     assert.doesNotThrow(() => parseManifest(yaml, {}));
     assert.equal(slugKey('***'), 'monitor');
 });
+
+test('exportMonitors keeps masked credentials as-is and explains them', () => {
+    const { yaml } = exportMonitors([
+        { id: 'a', external_id: 'api', name: 'API', type: 'api', url: 'https://api.example.com', interval_seconds: 60, is_active: true, config: { headers: { Authorization: '[REDACTED]', Accept: 'application/json' } } },
+    ]);
+    assert.match(yaml, /Authorization: "?\[REDACTED\]"?/);
+    assert.match(yaml, /# \[REDACTED\] marks a stored credential/);
+    const plain = exportMonitors([{ id: 'b', external_id: 'web', name: 'Web', type: 'http', url: 'https://example.com', interval_seconds: 60, is_active: true }]);
+    assert.doesNotMatch(plain.yaml, /REDACTED/);
+});

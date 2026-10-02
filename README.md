@@ -17,7 +17,7 @@ Node.js 20 or newer is required.
 | `SUTRAMX_API_KEY` (and optionally `SUTRAMX_API_URL`) | set; recommended for CI |
 | `sutramx login` | saves the key to `~/.config/sutramx/credentials.json` (mode 0600; `$XDG_CONFIG_HOME` and `$SUTRAMX_CONFIG` are honoured) |
 
-A key acts on the one workspace it was created in. A standard key can manage monitors and status pages. To manage **integrations** from `sutramx.yml`, create the key with **Automation access**. Per-monitor alert recipients (`config.notification_emails`) also need an Automation access key; a standard key gets a clear error instead of a change that never applies.
+A key acts on the one workspace it was created in. Keys have one of three access levels, chosen when the key is created: **Read-only** (`whoami`, `monitors list|get`, `regions`, `init --from-workspace`, `plan` and `diff` work; `apply`, `monitors create|pause|resume|delete|adopt` and every other change are refused with `403 READ_ONLY_ACCESS`; use it for CI jobs that only post the plan), **Standard** and **Automation**. A standard key can manage monitors and status pages. To manage **integrations** from `sutramx.yml`, create the key with **Automation access**. Per-monitor alert recipients (`config.notification_emails`) also need an Automation access key; a standard key gets a clear error instead of a change that never applies.
 
 ## Commands
 

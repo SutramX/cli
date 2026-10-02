@@ -21,6 +21,16 @@ export function slugKey(name: string): string {
     return slug || 'monitor';
 }
 
+/** What the API shows instead of a stored credential (header values, tokens, URL passwords). */
+export const MASKED_SECRET = '[REDACTED]';
+
+function hasMaskedSecret(value: unknown): boolean {
+    if (typeof value === 'string') return value.includes(MASKED_SECRET) || value.toUpperCase().includes('%5BREDACTED%5D');
+    if (Array.isArray(value)) return value.some(hasMaskedSecret);
+    if (value && typeof value === 'object') return Object.values(value).some(hasMaskedSecret);
+    return false;
+}
+
 // Keys written by dedicated endpoints or derived by the server: not part of the declared config.
 const NON_DECLARATIVE_CONFIG_KEYS = new Set(['notification_emails']);
 
@@ -57,6 +67,8 @@ export function exportMonitors(monitors: ExportableMonitor[]): { yaml: string; a
         '# sutramx.yml: monitors as code. Preview with `sutramx plan`, apply with `sutramx apply`.',
         '# Generated from the workspace by `sutramx init --from-workspace`.',
         adopted > 0 ? '# adopt_by_name links existing monitors to these keys on the first apply; you can remove it afterwards.' : '',
+        // Stored credentials are write-only: the API returns them masked.
+        hasMaskedSecret(entries) ? `# ${MASKED_SECRET} marks a stored credential the API does not reveal. apply keeps the stored value as long as the URL's origin is unchanged; replace it (e.g. with \${ENV_VAR}) to manage it here.` : '',
     ].filter(Boolean).join('\n');
     const duplicateNames = [...nameCount.entries()].filter(([, count]) => count > 1).map(([name]) => name);
     return { yaml: `${header}\n${stringify(document, { lineWidth: 0 })}`, adopted, duplicateNames };
