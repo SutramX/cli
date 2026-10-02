@@ -3,6 +3,27 @@
   "version": "0.1.0",
   "description": "SutramX command line: manage uptime monitors and keep them in code with sutramx.yml (plan / diff / apply).",
   "license": "MIT",
+  "author": "SutramX",
+  "homepage": "https://github.com/sutramx/cli#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sutramx/cli.git"
+  },
+  "bugs": {
+    "url": "https://github.com/sutramx/cli/issues"
+  },
+  "keywords": [
+    "sutramx",
+    "uptime",
+    "uptime-monitoring",
+    "monitoring",
+    "monitors-as-code",
+    "status-page",
+    "incidents",
+    "cli",
+    "devops",
+    "sre"
+  ],
   "type": "module",
   "bin": {
     "sutramx": "dist/index.js"
@@ -10,8 +31,10 @@
   "main": "dist/index.js",
   "files": [
     "dist",
+    "!dist/**/*.map",
+    "examples",
     "README.md",
-    "examples"
+    "LICENSE"
   ],
   "engines": {
     "node": ">=20"
@@ -31,5 +54,9 @@
     "@types/node": "^22.10.0",
     "tsx": "^4.20.0",
     "typescript": "^5.7.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
   }
 }

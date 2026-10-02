@@ -136,6 +136,14 @@ npm test
 node dist/index.js --help
 ```
 
+## Releasing
+
+Bump `version` in `package.json` and `src/version.ts`, commit, then push a tag `v<version>`. `.github/workflows/release.yml` checks that the tag matches both, runs typecheck, tests and build, and publishes to npm with provenance (needs the `NPM_TOKEN` repository secret). `npm pack --dry-run` shows exactly what will be published.
+
+## License
+
+MIT, see [LICENSE](LICENSE).
+
 ## Security guardrails
 
 - **API URL**: `--api-url` / `SUTRAMX_API_URL` must be `https://` (plain `http://` only for `localhost`). A warning is printed when the key is sent to a host outside `sutramx.com`, or when `NODE_TLS_REJECT_UNAUTHORIZED=0` disables certificate checks. Redirects are never followed.
