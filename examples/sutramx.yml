@@ -14,7 +14,7 @@ monitors:
   - key: web/home
     name: Website
     url: https://www.example.com
-    regions: [bom, sin, fra]
+    regions: [fra1, usa-az-probe]   # codes from `sutramx regions`
     config:
       keyword: Example Domain
 

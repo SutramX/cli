@@ -23,29 +23,34 @@ A key acts on the one workspace it was created in. Keys have one of three access
 
 | Command | |
 |---|---|
-| `sutramx login [--api-key sk_...]` / `logout` | save or remove the key |
-| `sutramx whoami` | workspace, plan and limits |
-| `sutramx monitors list [--tag t] [--status down] [--json]` | monitors with live status |
+| `sutramx login [--api-key sk_...]` | save a key (prompts, or reads it from stdin, when `--api-key` is left out) |
+| `sutramx logout` | remove the saved key |
+| `sutramx whoami [--json]` | workspace, plan and limits |
+| `sutramx monitors list [--tag t] [--status down] [--json]` | monitors with live status (`--status`: up, down, degraded, paused, pending, maintenance); alias `ls` |
 | `sutramx monitors get <id or key>` | one monitor as JSON |
-| `sutramx monitors create --name N --url U [--type api] [--interval 60] [--region fra1 --region usa-az-probe] [--tag prod] [--config '{...}'] [--key k] [--paused]` | create (with `--key`: create or update) |
-| `sutramx monitors pause|resume <id>` | stop or restart checks |
-| `sutramx monitors delete <id> [--yes]` | delete with its history |
+| `sutramx monitors create --name N [--url U] [--type api] [--interval 60] [--region fra1 --region usa-az-probe] [--tag prod] [--config '{...}'] [--key k] [--paused] [--json]` | create (with `--key`: create or update) |
+| `sutramx monitors pause <id or key>` / `resume <id or key>` | stop or restart checks |
+| `sutramx monitors delete <id or key> [-y, --yes]` | delete with its history (asks first unless `--yes`); alias `rm` |
 | `sutramx monitors adopt <id> <key>` | let `sutramx.yml` manage an existing monitor |
-| `sutramx incidents list [--status ongoing] [--monitor <id or key>] [--search t] [--from 2026-10-01] [--to ...] [--page 2] [--page-size 50] [--json]` | incidents, newest first (`--status`: all, ongoing, resolved, acknowledged, suppressed) |
+| `sutramx incidents list [--status ongoing] [--monitor <id or key>] [--search t] [--from 2026-10-01] [--to ...] [--page 2] [--page-size 50] [--json]` | incidents, newest first (`--status`: all, ongoing, resolved, acknowledged, suppressed; default all); alias `ls` |
 | `sutramx incidents get <id> [--json]` | one incident (`--json` includes the timeline) |
-| `sutramx incidents ack <id>` | acknowledge an ongoing incident (stops escalation) |
-| `sutramx incidents resolve <id> [--note "what was done"]` | resolve by hand; fails with `409 INCIDENT_RESOLVED` if already resolved |
-| `sutramx maintenance list [--status ongoing] [--json]` | maintenance windows with their scope and recurrence |
-| `sutramx regions` | probe location codes |
-| `sutramx init [--from-workspace]` | write a starter `sutramx.yml`, or one describing what exists now |
-| `sutramx validate` | check the file locally |
+| `sutramx incidents ack <id> [--json]` | acknowledge an ongoing incident (stops escalation); alias `acknowledge` |
+| `sutramx incidents resolve <id> [--note "what was done"] [--json]` | resolve by hand; fails with `409 INCIDENT_RESOLVED` if already resolved |
+| `sutramx maintenance list [--status ongoing] [--json]` | maintenance windows with their scope and recurrence (`--status`: scheduled, ongoing, completed, cancelled); alias `ls` |
+| `sutramx regions [--json]` | probe location codes (works without a key) |
+| `sutramx init [-f file] [--from-workspace] [--force]` | write a starter `sutramx.yml`, or one describing what exists now |
+| `sutramx validate [-f file]` | check the file locally |
 | `sutramx plan [--detailed-exitcode]` | what `apply` would change |
-| `sutramx diff` | the plan with every field shown old -> new |
-| `sutramx apply [--auto-approve] [--continue-on-error]` | make SutramX match the file |
+| `sutramx diff [--detailed-exitcode]` | the plan with every field shown old -> new |
+| `sutramx apply [--auto-approve] [--continue-on-error] [--allow-delete-all]` | make SutramX match the file |
+
+`monitors` and `incidents` also answer to `monitor` and `incident`. Every command accepts the global `--api-url <url>` (or `SUTRAMX_API_URL`); `sutramx --version` prints the version and `sutramx <command> --help` lists a command's options.
+
+**Monitor types** (`--type`, or `type:` in `sutramx.yml`): `http` (default), `api`, `ping`, `port`, `udp`, `dns`, `multistep` and `cron`. `http` and `api` need a URL; the others take their target from `config`: `ping` `{"host": ...}`, `port`/`udp` `{"host": ..., "port": ...}`, `dns` `{"hostname": "example.com", "record_type": "A"}` (A, AAAA, CNAME, MX, TXT or NS), `multistep` `{"steps": [{"name": ..., "method": ..., "url": ...}, ...]}`, `cron` `{"cron_expression": "*/5 * * * *"}`. `dns` and `multistep` monitors need a plan that includes them. Check intervals are 15 to 900 seconds; your plan sets the minimum (see `sutramx whoami`).
 
 Maintenance windows silence alerts, so creating, changing and deleting them is owner-only: the API refuses every API key (`403 WORKSPACE_OWNER_REQUIRED`), and the CLI only lists them. Manage them in the dashboard.
 
-`plan`, `diff` and `apply` accept `-f <file>`, `--prune` / `--no-prune`, `--adopt-by-name`, `--prune-integrations` and `--json`. With `--detailed-exitcode`, `plan` exits 0 when nothing would change, 2 when something would, 1 on error.
+`plan`, `diff` and `apply` accept `-f, --file <path>` (default `sutramx.yml`), `--prune` / `--no-prune`, `--adopt-by-name`, `--prune-integrations` and `--json`. With `--detailed-exitcode`, `plan` and `diff` exit 0 when nothing would change, 2 when something would, 1 on error. `apply` asks for confirmation on a terminal; in CI pass `--auto-approve` (without it a non-interactive apply is refused). `--allow-delete-all` lets a prune delete every managed monitor when the file declares none (otherwise refused).
 
 ## sutramx.yml
 
@@ -135,10 +140,6 @@ npm run build
 npm test
 node dist/index.js --help
 ```
-
-## Releasing
-
-Bump `version` in `package.json` and `src/version.ts`, commit, then push a tag `v<version>`. `.github/workflows/release.yml` checks that the tag matches both, runs typecheck, tests and build, and publishes to npm with provenance (needs the `NPM_TOKEN` repository secret). `npm pack --dry-run` shows exactly what will be published.
 
 ## License
 

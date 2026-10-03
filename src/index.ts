@@ -165,6 +165,9 @@ function collect(value: string, previous: string[] = []) {
     return [...previous, value];
 }
 
+/** Monitor types the API accepts (POST /monitors, sutramx.yml). dns and multistep need a plan that includes them. */
+const MONITOR_TYPES = ['http', 'api', 'ping', 'port', 'udp', 'dns', 'multistep', 'cron'] as const;
+
 function parseInterval(value: string): number {
     const seconds = Number(value);
     if (!/^\d+$/.test(value.trim()) || !Number.isSafeInteger(seconds) || seconds <= 0) {
@@ -176,12 +179,12 @@ function parseInterval(value: string): number {
 monitors.command('create')
     .description('Create a monitor (with --key: create or update the monitor with that key)')
     .requiredOption('--name <name>', 'display name')
-    .option('--url <url>', 'target URL (http/api)')
-    .option('--type <type>', 'http, api, ping, port, udp or cron', 'http')
-    .option('--interval <seconds>', 'seconds between checks', parseInterval)
+    .option('--url <url>', 'target URL (required for http/api; other types take their target from --config)')
+    .option('--type <type>', `monitor type: ${MONITOR_TYPES.join(', ')}`, 'http')
+    .option('--interval <seconds>', 'seconds between checks (15-900; the plan sets the minimum)', parseInterval)
     .option('--region <code>', 'probe location (repeatable)', collect)
     .option('--tag <tag>', 'tag (repeatable)', collect)
-    .option('--config <json>', 'type-specific config as JSON, e.g. \'{"host":"db.example.com","port":5432}\'')
+    .option('--config <json>', 'type-specific config as JSON, e.g. \'{"host":"db.example.com","port":5432}\' (port), \'{"hostname":"example.com","record_type":"MX"}\' (dns), \'{"steps":[...]}\' (multistep)')
     .option('--key <key>', 'stable key for idempotent create-or-update')
     .option('--paused', 'create it paused')
     .option('--json', 'JSON output')
