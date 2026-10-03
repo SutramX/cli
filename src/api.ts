@@ -68,7 +68,7 @@ export function parseErrorBody(status: number, body: unknown): ApiError {
             const fieldErrors = Array.isArray(record.errors)
                 ? (record.errors as Array<{ field?: string; message?: string; }>).map((e) => (e.field ? `${e.field}: ${e.message}` : String(e.message))).join('; ')
                 : '';
-            return new ApiError(status, fieldErrors ? `${record.error}: ${fieldErrors}` : record.error, record.code ? String(record.code) : undefined, record.errors ?? record);
+            return new ApiError(status, fieldErrors ? `${record.error}: ${fieldErrors}` : record.error, record.code ? String(record.code) : undefined, record.details ?? record.errors ?? record);
         }
     }
     return new ApiError(status, `HTTP ${status}`);

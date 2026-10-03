@@ -40,10 +40,12 @@
     "node": ">=20"
   },
   "scripts": {
-    "build": "tsc && node -e \"require('fs').chmodSync('dist/index.js', 0o755)\"",
+    "clean": "node -e \"require('fs').rmSync('dist', { recursive: true, force: true })\"",
+    "build": "npm run clean && tsc && node -e \"require('fs').chmodSync('dist/index.js', 0o755)\"",
     "dev": "tsx src/index.ts",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test tests/*.test.ts"
+    "test": "tsx --test tests/*.test.ts",
+    "prepublishOnly": "npm run build"
   },
   "dependencies": {
     "commander": "^14.0.0",

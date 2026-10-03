@@ -27,7 +27,7 @@ A key acts on the one workspace it was created in. Keys have one of three access
 | `sutramx whoami` | workspace, plan and limits |
 | `sutramx monitors list [--tag t] [--status down] [--json]` | monitors with live status |
 | `sutramx monitors get <id or key>` | one monitor as JSON |
-| `sutramx monitors create --name N --url U [--type api] [--interval 60] [--region bom --region sin] [--tag prod] [--config '{...}'] [--key k] [--paused]` | create (with `--key`: create or update) |
+| `sutramx monitors create --name N --url U [--type api] [--interval 60] [--region fra1 --region usa-az-probe] [--tag prod] [--config '{...}'] [--key k] [--paused]` | create (with `--key`: create or update) |
 | `sutramx monitors pause|resume <id>` | stop or restart checks |
 | `sutramx monitors delete <id> [--yes]` | delete with its history |
 | `sutramx monitors adopt <id> <key>` | let `sutramx.yml` manage an existing monitor |
@@ -65,7 +65,7 @@ monitors:
   - key: homepage         # stable id, unique per workspace: letters, digits, . _ : / -
     name: Homepage
     url: https://example.com
-    regions: [bom, sin]   # null = plan default; omit to leave as is
+    regions: [fra1, usa-az-probe]   # null = plan default; omit to leave as is
   - key: api-health
     name: API health
     type: api
