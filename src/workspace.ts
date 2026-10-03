@@ -117,7 +117,7 @@ export async function buildPlan(api: SutramXApi, manifest: Manifest, options: Re
         // applied before the integration step fails with 403.
         const me = await api.get<{ can_manage_alert_channels?: boolean; }>('/automation/whoami');
         if (me.can_manage_alert_channels === false) {
-            blockers.push('integrations can only be changed with an API key created with "Automation access" (this key has standard access)');
+            blockers.push('integrations can only be changed with an API key whose access level is "Automation" (this key is "Standard" or "Read-only")');
         }
     }
     return {

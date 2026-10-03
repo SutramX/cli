@@ -114,7 +114,7 @@ test('a standard key is told up front that it cannot change integrations', async
     try {
         const plan = await buildPlan(api, MANIFEST, effectiveOptions(MANIFEST, {}));
         assert.equal(plan.blockers.length, 1);
-        assert.match(plan.blockers[0], /Automation access/);
+        assert.match(plan.blockers[0], /"Automation"/);
     } finally {
         canManageAlertChannels = true;
     }

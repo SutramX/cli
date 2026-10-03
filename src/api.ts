@@ -155,7 +155,7 @@ export function describeError(error: unknown): string {
     const code = error.code ? ` ${error.code}` : '';
     let hint = '';
     if (error.status === 401) hint = 'Run `sutramx login` or set SUTRAMX_API_KEY.';
-    else if (error.code === 'AUTOMATION_KEY_REQUIRED') hint = 'Managing integrations needs an API key created with "Automation access".';
+    else if (error.code === 'AUTOMATION_KEY_REQUIRED') hint = 'Managing integrations needs an API key with the "Automation" access level.';
     else if (error.code === 'ENTITLEMENT_LIMIT_REACHED' || error.code === 'FEATURE_NOT_AVAILABLE') hint = 'Your plan does not allow this; see `sutramx whoami`.';
     else if (error.status === 429) hint = 'Rate limited; wait a few minutes.';
     let detail = '';

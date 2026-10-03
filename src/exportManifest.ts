@@ -115,7 +115,7 @@ monitors:
 #       - key: api-health
 #         section: API
 
-# Managing integrations needs an API key with "Automation access".
+# Managing integrations needs an API key with the "Automation" access level.
 # integrations:
 #   - name: Ops Slack
 #     type: slack
