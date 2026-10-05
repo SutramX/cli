@@ -1,6 +1,7 @@
 import { readFileSync, statSync } from 'node:fs';
 import { parse as parseYaml } from 'yaml';
 import { z } from 'zod';
+import { integrationLabel } from './reconcile.js';
 
 /**
  * sutramx.yml: the declarative description of a workspace's monitors, status
@@ -166,7 +167,7 @@ export function parseManifest(source: string, env: NodeJS.ProcessEnv = process.e
     };
     duplicates(manifest.monitors.map((monitor) => monitor.key), 'monitor key');
     duplicates((manifest.status_pages || []).map((page) => page.slug), 'status page slug');
-    duplicates((manifest.integrations || []).map((integration) => `${integration.type}/${integration.name}`), 'integration');
+    duplicates((manifest.integrations || []).map((integration) => integrationLabel(integration.type, integration.name)), 'integration');
     if (problems.length) throw new ManifestError('sutramx.yml is invalid:', problems);
     return manifest;
 }

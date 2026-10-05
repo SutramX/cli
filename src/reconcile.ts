@@ -182,13 +182,23 @@ export function resolveRouting(routing: ManifestIntegration['routing'], resolver
     return { routing: { scope: 'monitors', monitor_ids: ids }, unknown, pending };
 }
 
+/** Integration names as the API stores them: trimmed, inner whitespace collapsed. */
+export function normalizeIntegrationName(name: string): string {
+    return name.trim().replace(/\s+/g, ' ');
+}
+
+/** type/name identity of an integration (names compared as the API stores them). */
+export function integrationLabel(type: string, name: string): string {
+    return `${type}/${normalizeIntegrationName(name)}`;
+}
+
 export function planIntegrations(
     desired: ManifestIntegration[],
     remote: RemoteConnection[],
     resolver: MonitorResolver,
     options: { prune?: boolean; } = {}
 ): IntegrationChange[] {
-    const keyOf = (type: string, name: string) => `${type}/${name}`;
+    const keyOf = integrationLabel;
     const byKey = new Map(remote.map((connection) => [keyOf(connection.integration_type, connection.name), connection]));
     const plan: IntegrationChange[] = desired.map((integration) => {
         const current = byKey.get(keyOf(integration.type, integration.name)) || null;

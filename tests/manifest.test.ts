@@ -136,3 +136,33 @@ test('exportMonitors keeps masked credentials as-is and explains them', () => {
     const plain = exportMonitors([{ id: 'b', external_id: 'web', name: 'Web', type: 'http', url: 'https://example.com', interval_seconds: 60, is_active: true }]);
     assert.doesNotMatch(plain.yaml, /REDACTED/);
 });
+
+test('exportMonitors skips browser checks (plan rejects them) and reports them', () => {
+    const { yaml, exported, skipped } = exportMonitors([
+        { id: '1', external_id: 'web', name: 'Web', type: 'http', url: 'https://example.com', interval_seconds: 60, is_active: true },
+        { id: '2', name: 'Checkout flow', type: 'browser', url: 'https://shop.example.com', interval_seconds: 600, is_active: true, config: { script: 'x' } },
+    ]);
+    const doc = parse(yaml);
+    assert.equal(exported, 1);
+    assert.deepEqual(skipped.map((monitor) => monitor.name), ['Checkout flow']);
+    assert.deepEqual(doc.monitors.map((monitor: any) => monitor.type), ['http']);
+    assert.equal(doc.settings.adopt_by_name, false, 'a skipped monitor is not something to adopt');
+});
+
+test('integration names match as the API stores them (trimmed, whitespace collapsed)', () => {
+    const integrations = parseManifest(`
+integrations:
+  - name: "  Ops   team "
+    type: slack
+    config: {}
+`, {}).integrations!;
+    const plan = planIntegrations(integrations, [
+        { id: 'c1', integration_type: 'slack', name: 'Ops team', config: {}, routing: { scope: 'all' } },
+    ], resolver, { prune: true });
+    assert.deepEqual(plan.map((change) => `${change.action}:${change.id}`), ['noop:c1'], 'no create of a duplicate, no prune of the existing one');
+    assert.throws(() => parseManifest(`
+integrations:
+  - { name: "Ops team", type: slack }
+  - { name: "Ops  team", type: slack }
+`, {}), /duplicate integration: slack\/Ops team/);
+});
