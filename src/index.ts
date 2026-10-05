@@ -428,9 +428,12 @@ program.command('init')
             return;
         }
         const list = await api().get<any[]>('/monitors');
-        const { yaml, adopted, duplicateNames } = exportMonitors(list);
+        const { yaml, exported, adopted, duplicateNames, skipped } = exportMonitors(list);
         writeFileSync(options.file, yaml, { flag });
-        stdout.write(`Wrote ${options.file} with ${list.length} monitors${adopted ? ` (${adopted} will be linked by name on the first apply)` : ''}.\n`);
+        stdout.write(`Wrote ${options.file} with ${exported} monitors${adopted ? ` (${adopted} will be linked by name on the first apply)` : ''}.\n`);
+        if (skipped.length) {
+            stdout.write(yellow(`Skipped ${skipped.length} ${[...new Set(skipped.map((monitor) => clean(monitor.type)))].join('/')} monitor${skipped.length === 1 ? '' : 's'} (${skipped.map((monitor) => `"${clean(monitor.name)}"`).join(', ')}): ${skipped.length === 1 ? 'it is' : 'they are'} managed in the dashboard, not in sutramx.yml, and apply never changes ${skipped.length === 1 ? 'it' : 'them'}.\n`));
+        }
         if (duplicateNames.length) {
             stdout.write(yellow(`Several monitors share these names, so they cannot be linked by name: ${duplicateNames.join(', ')}. Use \`sutramx monitors adopt <id> <key>\` for them before applying.\n`));
         }

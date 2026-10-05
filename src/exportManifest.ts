@@ -34,7 +34,16 @@ function hasMaskedSecret(value: unknown): boolean {
 // Keys written by dedicated endpoints or derived by the server: not part of the declared config.
 const NON_DECLARATIVE_CONFIG_KEYS = new Set(['notification_emails']);
 
-export function exportMonitors(monitors: ExportableMonitor[]): { yaml: string; adopted: number; duplicateNames: string[]; } {
+/**
+ * Types managed through their own API (browser checks): plan/apply never see
+ * them, so a file declaring one fails to plan. Same list as the API's
+ * SELF_SCHEDULED_MONITOR_TYPES.
+ */
+export const NOT_DECLARABLE_TYPES = new Set(['browser']);
+
+export function exportMonitors(all: ExportableMonitor[]): { yaml: string; exported: number; adopted: number; duplicateNames: string[]; skipped: ExportableMonitor[]; } {
+    const skipped = all.filter((monitor) => NOT_DECLARABLE_TYPES.has(monitor.type));
+    const monitors = all.filter((monitor) => !NOT_DECLARABLE_TYPES.has(monitor.type));
     const used = new Set(monitors.map((monitor) => monitor.external_id).filter(Boolean) as string[]);
     const nameCount = new Map<string, number>();
     for (const monitor of monitors) nameCount.set(`${monitor.type}/${monitor.name}`, (nameCount.get(`${monitor.type}/${monitor.name}`) || 0) + 1);
@@ -71,7 +80,7 @@ export function exportMonitors(monitors: ExportableMonitor[]): { yaml: string; a
         hasMaskedSecret(entries) ? `# ${MASKED_SECRET} marks a stored credential the API does not reveal. apply keeps the stored value as long as the URL's origin is unchanged; replace it (e.g. with \${ENV_VAR}) to manage it here.` : '',
     ].filter(Boolean).join('\n');
     const duplicateNames = [...nameCount.entries()].filter(([, count]) => count > 1).map(([name]) => name);
-    return { yaml: `${header}\n${stringify(document, { lineWidth: 0 })}`, adopted, duplicateNames };
+    return { yaml: `${header}\n${stringify(document, { lineWidth: 0 })}`, exported: monitors.length, adopted, duplicateNames, skipped };
 }
 
 export const SAMPLE_MANIFEST = `# sutramx.yml: monitors as code.
