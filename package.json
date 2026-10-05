@@ -1,6 +1,6 @@
 {
   "name": "@sutramx/cli",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "SutramX command line: manage uptime monitors and keep them in code with sutramx.yml (plan / diff / apply).",
   "license": "MIT",
   "author": "SutramX",
