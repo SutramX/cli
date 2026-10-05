@@ -76,13 +76,16 @@ export interface ResolvedAuth {
     apiKey: string;
     apiUrl: string;
     source: 'env' | 'file';
+    /** Workspace saved by `sutramx login` (also when SUTRAMX_API_KEY overrides the saved key). */
+    savedWorkspaceId?: string;
 }
 
 export function resolveAuth(overrides: { apiUrl?: string; } = {}, env: NodeJS.ProcessEnv = process.env): ResolvedAuth | null {
     const stored = readCredentials(env);
     const apiUrl = overrides.apiUrl || env.SUTRAMX_API_URL || stored?.api_url || DEFAULT_API_URL;
-    if (env.SUTRAMX_API_KEY) return { apiKey: env.SUTRAMX_API_KEY.trim(), apiUrl, source: 'env' };
-    if (stored) return { apiKey: stored.api_key, apiUrl, source: 'file' };
+    const saved = stored?.workspace_id ? { savedWorkspaceId: stored.workspace_id } : {};
+    if (env.SUTRAMX_API_KEY) return { apiKey: env.SUTRAMX_API_KEY.trim(), apiUrl, source: 'env', ...saved };
+    if (stored) return { apiKey: stored.api_key, apiUrl, source: 'file', ...saved };
     return null;
 }
 

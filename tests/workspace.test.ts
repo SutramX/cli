@@ -4,7 +4,7 @@ import type { AddressInfo } from 'node:net';
 import { after, before, test } from 'node:test';
 import { SutramXApi } from '../src/api.js';
 import { parseManifest } from '../src/manifest.js';
-import { applyPlan, buildPlan, effectiveOptions, pruneSettingWarnings } from '../src/workspace.js';
+import { applyPlan, buildPlan, checkTarget, effectiveOptions, PlanChangedError, pruneSettingWarnings, WorkspacePlan } from '../src/workspace.js';
 
 /** Fake API: monitors are planned/applied by the server, the rest by the CLI. */
 const calls: Array<{ method: string; url: string; body?: any; }> = [];
@@ -146,4 +146,58 @@ test('adopt_by_name may come from the file; deletes only from command-line flags
     assert.equal(effectiveOptions(manifest, { pruneIntegrations: true }).pruneIntegrations, true);
     assert.equal(pruneSettingWarnings(manifest, {}).length, 2);
     assert.deepEqual(pruneSettingWarnings(manifest, { prune: true, pruneIntegrations: true }), []);
+});
+
+test('routing to a monitor key that is neither declared nor existing blocks apply (never routes to an empty list)', async () => {
+    const manifest = parseManifest(`
+monitors:
+  - { key: homepage, name: Homepage, url: https://example.com }
+integrations:
+  - name: Typo
+    type: slack
+    config: { webhook_url: "https://hooks.slack.com/services/T/B/zz9999" }
+    routing: { scope: monitors, monitors: [hompage] }
+`, {});
+    const plan = await buildPlan(api, manifest, effectiveOptions(manifest, {}));
+    assert.equal(plan.blockers.length, 1);
+    assert.match(plan.blockers[0], /slack\/Typo routes to unknown monitor keys: hompage/);
+});
+
+test('integrations are planned once: a change made after the review stops apply before anything is applied', async () => {
+    const manifest = parseManifest(`
+monitors:
+  - { key: homepage, name: Homepage, url: https://example.com }
+integrations:
+  - name: Late
+    type: slack
+    config: { webhook_url: "https://hooks.slack.com/services/T/B/ll1234" }
+`, {});
+    const options = effectiveOptions(manifest, {});
+    const reviewed = await buildPlan(api, manifest, options);
+    assert.equal(reviewed.integrations[0].action, 'create');
+    assert.match(reviewed.fingerprint, /^sha256:[0-9a-f]{64}$/);
+    // Someone creates a different "Late" (another secret) after the plan was shown.
+    state.connections.push({ id: 'conn-late', integration_type: 'slack', name: 'Late', config: { webhook_url: 'https://hooks.slack.com/…0000' }, routing: { scope: 'all' } });
+    const before = calls.length;
+    await assert.rejects(applyPlan(api, manifest, { ...options, reviewed }), PlanChangedError);
+    assert.ok(!calls.slice(before).some((call) => call.method !== 'GET'), 'nothing was written');
+});
+
+test('target workspace: a key for another workspace blocks destructive applies unless --workspace confirms it', () => {
+    const plan = (actions: string[]): WorkspacePlan => ({
+        monitors: { changes: actions.map((action, index) => ({ action: action as any, key: `k${index}`, name: 'n', type: 'http', monitor_id: 'm', changes: [] })), summary: {} as any },
+        statusPages: [], integrations: [], warnings: [], blockers: [], hasChanges: true, target: { workspace_id: 'ws_ci' }, fingerprint: 'x',
+    });
+    const fromEnv = { savedWorkspace: 'ws_login', keySource: 'env' as const };
+    assert.deepEqual(checkTarget(plan(['delete']), fromEnv).blockers.length, 1);
+    assert.match(checkTarget(plan(['replace']), fromEnv).blockers[0], /acts on workspace ws_ci, not ws_login .*SUTRAMX_API_KEY overrides.*--workspace ws_ci/);
+    // Non-destructive: a warning only.
+    const create = checkTarget(plan(['create']), fromEnv);
+    assert.deepEqual(create.blockers, []);
+    assert.equal(create.warnings.length, 1);
+    // Explicit confirmation, and the file's declared workspace.
+    assert.deepEqual(checkTarget(plan(['delete']), { ...fromEnv, confirmedWorkspace: 'ws_ci' }), { warnings: [], blockers: [] });
+    assert.equal(checkTarget(plan(['create']), { confirmedWorkspace: 'ws_other' }).blockers.length, 1);
+    assert.match(checkTarget(plan(['delete']), { declaredWorkspace: 'ws_prod' }).blockers[0], /settings\.workspace_id/);
+    assert.deepEqual(checkTarget(plan(['delete']), { declaredWorkspace: 'ws_ci', savedWorkspace: 'ws_ci' }), { warnings: [], blockers: [] });
 });

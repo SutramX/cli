@@ -15,7 +15,7 @@ import {
 } from './operations.js';
 import { bold, clean, cyan, dim, green, red, renderPlan, renderStep, table, yellow } from './render.js';
 import { VERSION } from './version.js';
-import { applyPlan, buildPlan, effectiveOptions, PlanChangedError, PlanOptions, pruneSettingWarnings, redactedPlan } from './workspace.js';
+import { applyPlan, buildPlan, checkTarget, destructiveCounts, effectiveOptions, PlanChangedError, PlanOptions, pruneSettingWarnings, redactedPlan } from './workspace.js';
 
 /** Exit codes: 0 ok / no changes, 1 error, 2 changes present (plan --detailed-exitcode). */
 
@@ -447,6 +447,7 @@ function planFlags(command: Command) {
         .option('--no-prune', 'never delete monitors')
         .option('--adopt-by-name', 'link existing unkeyed monitors with the same name and type')
         .option('--prune-integrations', 'delete integrations of the declared types that are not in the file')
+        .option('--workspace <id>', 'the workspace you mean to change: refuse unless the API key acts on it (confirms a key that differs from the login or settings.workspace_id)')
         .option('--json', 'JSON output');
 }
 
@@ -455,7 +456,28 @@ interface PlanCommandOptions {
     prune?: boolean;
     adoptByName?: boolean;
     pruneIntegrations?: boolean;
+    workspace?: string;
     json?: boolean;
+}
+
+/** Plan, plus the checks that the key acts on the workspace the user expects. */
+async function planWithTargetChecks(client: SutramXApi, manifest: Manifest, flags: PlanOptions, options: PlanCommandOptions) {
+    const plan = await buildPlan(client, manifest, effectiveOptions(manifest, flags));
+    plan.warnings.push(...pruneSettingWarnings(manifest, flags));
+    const auth = resolveAuth({ apiUrl: (program.opts() as GlobalOptions).apiUrl });
+    const target = checkTarget(plan, {
+        confirmedWorkspace: options.workspace,
+        declaredWorkspace: manifest.settings?.workspace_id,
+        savedWorkspace: auth?.savedWorkspaceId,
+        keySource: auth?.source,
+    });
+    plan.warnings.push(...target.warnings);
+    plan.blockers.push(...target.blockers);
+    return plan;
+}
+
+function plural(count: number, word: string): string {
+    return `${count} ${word}${count === 1 ? '' : 's'}`;
 }
 
 /** commander sets prune=true for --prune, false for --no-prune and true by default with both declared; read argv instead. */
@@ -481,9 +503,7 @@ for (const name of ['plan', 'diff'] as const) {
         .option('--detailed-exitcode', 'exit 2 when there are changes')
         .action(async (options: PlanCommandOptions & { detailedExitcode?: boolean; }) => {
             const manifest = loadManifest(options.file);
-            const flags = flagsFrom(options);
-            const plan = await buildPlan(api(), manifest, effectiveOptions(manifest, flags));
-            plan.warnings.push(...pruneSettingWarnings(manifest, flags));
+            const plan = await planWithTargetChecks(api(), manifest, flagsFrom(options), options);
             if (options.json) printJson(redactedPlan(plan));
             else stdout.write(`${renderPlan(plan, { detailed: name === 'diff' })}\n`);
             if (options.detailedExitcode && plan.hasChanges) process.exitCode = 2;
@@ -495,37 +515,40 @@ planFlags(program.command('apply'))
     .option('--auto-approve', 'apply without asking (CI)')
     .option('-y, --yes', 'same as --auto-approve')
     .option('--continue-on-error', 'keep going after a failed change')
+    .option('--allow-replace', 'allow monitors whose type changed to be deleted (with their history) and created again (also allowed by --prune)')
     .option('--allow-delete-all', 'allow a prune that deletes every managed monitor (the file declares none)')
     .option('--force-prune-without-plan-check', 'with --prune against an API that cannot verify the plan (no plan fingerprint): delete anyway')
-    .action(async (options: PlanCommandOptions & { yes?: boolean; autoApprove?: boolean; continueOnError?: boolean; allowDeleteAll?: boolean; forcePruneWithoutPlanCheck?: boolean; }) => {
+    .action(async (options: PlanCommandOptions & { yes?: boolean; autoApprove?: boolean; continueOnError?: boolean; allowReplace?: boolean; allowDeleteAll?: boolean; forcePruneWithoutPlanCheck?: boolean; }) => {
         const manifest = loadManifest(options.file);
         const client = api();
         const flags = flagsFrom(options);
         const effective = effectiveOptions(manifest, flags);
-        const plan = await buildPlan(client, manifest, effective);
-        plan.warnings.push(...pruneSettingWarnings(manifest, flags));
+        const plan = await planWithTargetChecks(client, manifest, flags, options);
         if (!options.json) stdout.write(`${renderPlan(plan)}\n`);
         if (!plan.hasChanges) {
             if (options.json) printJson({ ok: true, changed: false, steps: [] });
             return;
         }
-        const deletes = plan.monitors.changes.filter((change) => change.action === 'delete').length;
+        const { deletes, replaces, integrationDeletes } = destructiveCounts(plan);
         if (deletes > 0 && manifest.monitors.length === 0 && !options.allowDeleteAll) {
             // An empty or truncated file plus prune would wipe the workspace.
             plan.blockers.push(`the file declares no monitors, so prune would delete all ${deletes} managed monitors; pass --allow-delete-all if that is intended`);
+        }
+        if (replaces > 0 && !effective.prune && !options.allowReplace) {
+            // A type change is a delete + create: the old monitor's checks and incidents go.
+            plan.blockers.push(`${plural(replaces, 'monitor')} changed type and would be deleted with ${replaces === 1 ? 'its' : 'their'} history and created again; pass --allow-replace (or --prune) if that is intended`);
         }
         // Apply must do what was shown: the plan fingerprint makes the API
         // refuse (409 PLAN_CHANGED) if the workspace changed in between.
         const fingerprint = plan.monitors.plan_fingerprint;
         let prune = effective.prune;
         let allowPruneWithoutFingerprint = false;
-        if (prune && !fingerprint) {
-            if (deletes === 0) {
-                prune = false; // no delete was shown, so none may happen
-            } else if (options.forcePruneWithoutPlanCheck) {
-                allowPruneWithoutFingerprint = true;
-            } else {
-                plan.blockers.push(`this API cannot verify that apply deletes only the ${deletes} monitor${deletes === 1 ? '' : 's'} shown (no plan fingerprint); run without --prune, or pass --force-prune-without-plan-check`);
+        if (!fingerprint) {
+            if (prune && deletes === 0) prune = false; // no delete was shown, so none may happen
+            const destructive = (prune ? deletes : 0) + replaces;
+            if (destructive > 0) {
+                if (options.forcePruneWithoutPlanCheck) allowPruneWithoutFingerprint = true;
+                else plan.blockers.push(`this API cannot verify that apply deletes only the ${plural(destructive, 'monitor')} shown (no plan fingerprint); run without --prune${replaces ? ' and without type changes' : ''}, or pass --force-prune-without-plan-check`);
             }
         }
         if (plan.blockers.length) {
@@ -533,10 +556,15 @@ planFlags(program.command('apply'))
         }
         if (!options.yes && !options.autoApprove) {
             if (!stdin.isTTY) throw new Error('Refusing to apply without confirmation: pass --auto-approve (or --yes) in non-interactive runs.');
-            const question = deletes > 0 ? `\nApply these changes? ${red(`${deletes} monitor${deletes === 1 ? '' : 's'} will be deleted with ${deletes === 1 ? 'its' : 'their'} history.`)}` : '\nApply these changes?';
-            if (!(await confirm(question))) throw new Error('Apply cancelled.');
+            const losses = [
+                deletes > 0 ? `${plural(deletes, 'monitor')} will be deleted with ${deletes === 1 ? 'its' : 'their'} history.` : '',
+                replaces > 0 ? `${plural(replaces, 'monitor')} will be deleted with ${replaces === 1 ? 'its' : 'their'} history and created again (type change).` : '',
+                integrationDeletes > 0 ? `${plural(integrationDeletes, 'integration')} will be deleted.` : '',
+            ].filter(Boolean).join(' ');
+            const where = plan.target.workspace_id ? ` to workspace ${bold(clean(plan.target.workspace_id))}` : '';
+            if (!(await confirm(`\nApply these changes${where}?${losses ? ` ${red(losses)}` : ''}`))) throw new Error('Apply cancelled.');
         }
-        const applyOptions = { ...effective, prune, continueOnError: options.continueOnError, expectedFingerprint: fingerprint, allowPruneWithoutFingerprint };
+        const applyOptions = { ...effective, prune, reviewed: plan, continueOnError: options.continueOnError, expectedFingerprint: fingerprint, allowPruneWithoutFingerprint };
         const outcome = await applyPlan(client, manifest, applyOptions, (step) => {
             if (!options.json) stdout.write(`${renderStep(step)}\n`);
         });

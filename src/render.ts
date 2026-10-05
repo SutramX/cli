@@ -84,6 +84,10 @@ export function renderPlan(plan: WorkspacePlan, options: { detailed?: boolean; s
     const detailed = options.detailed ?? false;
     const showNoop = options.showNoop ?? false;
     const out: string[] = [];
+    if (plan.target?.workspace_id) {
+        const details = [plan.target.plan && `${clean(plan.target.plan)} plan`, plan.target.api_key_access && `${clean(plan.target.api_key_access)} key`].filter(Boolean).join(', ');
+        out.push(`${bold('Workspace:')} ${clean(plan.target.workspace_id)}${details ? dim(` (${details})`) : ''}`, '');
+    }
     const section = (title: string, lines: string[]) => {
         if (lines.length) out.push(bold(title), ...lines, '');
     };

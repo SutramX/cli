@@ -74,6 +74,8 @@ const ManifestSchema = z.object({
         adopt_by_name: z.boolean().optional(),
         /** Delete integrations of the declared types that are not in this file. */
         prune_integrations: z.boolean().optional(),
+        /** The workspace this file describes: apply refuses destructive changes when the API key acts on another one. */
+        workspace_id: z.string().min(1).max(64).optional(),
     }).strict().optional(),
     monitors: z.array(MonitorSchema).max(500).default([]),
     status_pages: z.array(StatusPageSchema).max(100).optional(),

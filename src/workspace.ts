@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { SutramXApi } from './api.js';
 import { ApiError } from './api.js';
 import { Manifest, monitorSpecs } from './manifest.js';
@@ -8,6 +9,7 @@ import {
     planStatusPages,
     RemoteConnection,
     RemoteStatusPage,
+    integrationLabel,
     resolvePageMonitors,
     redactIntegration,
     resolveRouting,
@@ -52,6 +54,13 @@ export interface MonitorApplyResult extends MonitorChange {
     error?: { message: string; code?: string; };
 }
 
+/** The workspace the credential acts on (GET /automation/whoami). */
+export interface PlanTarget {
+    workspace_id: string | null;
+    plan?: string;
+    api_key_access?: string;
+}
+
 export interface WorkspacePlan {
     monitors: MonitorPlanResponse;
     statusPages: StatusPageChange[];
@@ -60,6 +69,45 @@ export interface WorkspacePlan {
     /** Problems that make apply fail part-way; apply refuses to start while any exist. */
     blockers: string[];
     hasChanges: boolean;
+    /** Where apply would make these changes. */
+    target: PlanTarget;
+    /**
+     * Fingerprint of the client-side part of the plan (status pages and
+     * integrations): apply refuses to change them if they differ from what
+     * was shown. The monitor part has its own (monitors.plan_fingerprint).
+     */
+    fingerprint: string;
+}
+
+/** What the reviewer should know is destructive: these need an explicit flag and a red prompt. */
+export interface DestructiveCounts {
+    /** Monitors deleted by --prune. */
+    deletes: number;
+    /** Monitors whose type changes: deleted (with history) and created again. */
+    replaces: number;
+    /** Integrations deleted by --prune-integrations. */
+    integrationDeletes: number;
+}
+
+export function destructiveCounts(plan: WorkspacePlan): DestructiveCounts {
+    return {
+        deletes: plan.monitors.changes.filter((change) => change.action === 'delete').length,
+        replaces: plan.monitors.changes.filter((change) => change.action === 'replace').length,
+        integrationDeletes: plan.integrations.filter((change) => change.action === 'delete').length,
+    };
+}
+
+/**
+ * sha256 over the non-noop status page and integration changes (action,
+ * name, id and the names of the fields that change — never their values,
+ * which may be secrets). Order-independent.
+ */
+export function clientPlanFingerprint(statusPages: StatusPageChange[], integrations: IntegrationChange[]): string {
+    const entries = [
+        ...statusPages.filter((change) => change.action !== 'noop').map((change) => ['status_page', change.action, change.slug, change.id, change.changes.map((diff) => diff.field).sort()]),
+        ...integrations.filter((change) => change.action !== 'noop').map((change) => ['integration', change.action, integrationLabel(change.type, change.name), change.id, change.changes.map((diff) => diff.field).sort()]),
+    ].map((entry) => JSON.stringify(entry)).sort();
+    return `sha256:${createHash('sha256').update(JSON.stringify(entries)).digest('hex')}`;
 }
 
 export interface PlanOptions {
@@ -113,49 +161,120 @@ function resolverFor(monitors: RemoteMonitor[], manifest: Manifest, excludeIds: 
     return createMonitorResolver(monitors.filter((monitor) => !excludeIds.has(monitor.id)), manifest.monitors.map((monitor) => monitor.key));
 }
 
-function warningsFor(statusPages: StatusPageChange[], integrations: IntegrationChange[]): string[] {
+function warningsFor(statusPages: StatusPageChange[]): string[] {
     const warnings: string[] = [];
     for (const page of statusPages) {
         if (page.unknownMonitors.length) warnings.push(`status page ${page.slug} references unknown monitor keys: ${page.unknownMonitors.join(', ')} (they will be skipped)`);
     }
-    for (const integration of integrations) {
-        if (integration.unknownMonitors.length) warnings.push(`integration ${integration.type}/${integration.name} routes to unknown monitor keys: ${integration.unknownMonitors.join(', ')} (they will be skipped)`);
-    }
     return warnings;
 }
 
-export async function buildPlan(api: SutramXApi, manifest: Manifest, options: Required<PlanOptions>): Promise<WorkspacePlan> {
-    const [monitorPlan, remoteMonitors, remotePages, remoteConnections] = await Promise.all([
-        api.post<MonitorPlanResponse>('/automation/monitors/plan', { monitors: monitorSpecs(manifest), prune: options.prune, adopt_by_name: options.adoptByName }),
+/**
+ * Routing to a monitor key that is neither declared nor existing is an
+ * error: dropping it would send the integration a narrower (possibly empty)
+ * monitor list than the file says.
+ */
+function blockersFor(integrations: IntegrationChange[]): string[] {
+    return integrations
+        .filter((integration) => integration.unknownMonitors.length > 0)
+        .map((integration) => `integration ${integration.type}/${integration.name} routes to unknown monitor keys: ${integration.unknownMonitors.join(', ')} (declare them in the file or fix the keys)`);
+}
+
+/** Status page and integration changes, against the workspace as it is now. */
+async function planOtherResources(
+    api: SutramXApi,
+    manifest: Manifest,
+    options: Required<PlanOptions>,
+    leaving: Set<string>
+): Promise<{ statusPages: StatusPageChange[]; integrations: IntegrationChange[]; }> {
+    const [remoteMonitors, remotePages, remoteConnections] = await Promise.all([
         api.get<RemoteMonitor[]>('/monitors'),
         loadStatusPages(api, manifest),
         loadConnections(api, manifest),
     ]);
-    // Monitors being replaced or deleted get new ids (or none) after apply.
-    const leaving = new Set(monitorPlan.changes.filter((change) => change.action === 'replace' || change.action === 'delete').map((change) => String(change.monitor_id)));
     const resolver = resolverFor(remoteMonitors, manifest, leaving);
-    const statusPages = planStatusPages(manifest.status_pages || [], remotePages, resolver);
-    const integrations = planIntegrations(manifest.integrations || [], remoteConnections, resolver, { prune: options.pruneIntegrations });
+    return {
+        statusPages: planStatusPages(manifest.status_pages || [], remotePages, resolver),
+        integrations: planIntegrations(manifest.integrations || [], remoteConnections, resolver, { prune: options.pruneIntegrations }),
+    };
+}
+
+/** Monitors being replaced or deleted get new ids (or none) after apply. */
+function leavingMonitorIds(monitorPlan: MonitorPlanResponse): Set<string> {
+    return new Set(monitorPlan.changes.filter((change) => change.action === 'replace' || change.action === 'delete').map((change) => String(change.monitor_id)));
+}
+
+export async function buildPlan(api: SutramXApi, manifest: Manifest, options: Required<PlanOptions>): Promise<WorkspacePlan> {
+    const [monitorPlan, me] = await Promise.all([
+        api.post<MonitorPlanResponse>('/automation/monitors/plan', { monitors: monitorSpecs(manifest), prune: options.prune, adopt_by_name: options.adoptByName }),
+        api.get<{ workspace_id?: string; plan?: string; api_key_access?: string; can_manage_alert_channels?: boolean; }>('/automation/whoami'),
+    ]);
+    const { statusPages, integrations } = await planOtherResources(api, manifest, options, leavingMonitorIds(monitorPlan));
     const hasChanges = monitorPlan.changes.some((change) => change.action !== 'noop')
         || statusPages.some((change) => change.action !== 'noop')
         || integrations.some((change) => change.action !== 'noop');
-    const blockers: string[] = [];
-    if (integrations.some((change) => change.action !== 'noop')) {
-        // Checked up front: otherwise monitors (and prune deletes) would be
-        // applied before the integration step fails with 403.
-        const me = await api.get<{ can_manage_alert_channels?: boolean; }>('/automation/whoami');
-        if (me.can_manage_alert_channels === false) {
-            blockers.push('integrations can only be changed with an API key whose access level is "Automation" (this key is "Standard" or "Read-only")');
-        }
+    const blockers: string[] = blockersFor(integrations);
+    // Checked up front: otherwise monitors (and prune deletes) would be
+    // applied before the integration step fails with 403.
+    if (integrations.some((change) => change.action !== 'noop') && me.can_manage_alert_channels === false) {
+        blockers.push('integrations can only be changed with an API key whose access level is "Automation" (this key is "Standard" or "Read-only")');
     }
     return {
         monitors: monitorPlan,
         statusPages,
         integrations,
-        warnings: [...(monitorPlan.warnings || []), ...warningsFor(statusPages, integrations)],
+        warnings: [...(monitorPlan.warnings || []), ...warningsFor(statusPages)],
         blockers,
         hasChanges,
+        target: {
+            workspace_id: typeof me.workspace_id === 'string' ? me.workspace_id : null,
+            ...(me.plan ? { plan: me.plan } : {}),
+            ...(me.api_key_access ? { api_key_access: me.api_key_access } : {}),
+        },
+        fingerprint: clientPlanFingerprint(statusPages, integrations),
     };
+}
+
+export interface TargetCheckInput {
+    /** --workspace on the command line: the user names the workspace they mean (explicit confirmation). */
+    confirmedWorkspace?: string;
+    /** settings.workspace_id in the file. */
+    declaredWorkspace?: string;
+    /** workspace_id saved by `sutramx login`. */
+    savedWorkspace?: string;
+    /** Where the API key came from. */
+    keySource?: 'env' | 'file';
+}
+
+/**
+ * The workspace the key acts on must be the one the user expects. A
+ * mismatch with --workspace always blocks; a mismatch with the file's
+ * settings.workspace_id or the login's saved workspace (e.g. SUTRAMX_API_KEY
+ * for another workspace overriding the login) blocks destructive applies
+ * unless --workspace names the key's workspace, and warns otherwise.
+ */
+export function checkTarget(plan: WorkspacePlan, input: TargetCheckInput): { warnings: string[]; blockers: string[]; } {
+    const warnings: string[] = [];
+    const blockers: string[] = [];
+    const actual = plan.target.workspace_id;
+    if (input.confirmedWorkspace) {
+        if (actual !== input.confirmedWorkspace) blockers.push(`--workspace ${input.confirmedWorkspace} was given, but this API key acts on workspace ${actual ?? '(unknown)'}`);
+        return { warnings, blockers };
+    }
+    const counts = destructiveCounts(plan);
+    const destructive = counts.deletes + counts.replaces + counts.integrationDeletes > 0;
+    const expectations: Array<[string | undefined, string]> = [
+        [input.declaredWorkspace, 'the file\'s settings.workspace_id'],
+        [input.savedWorkspace, input.keySource === 'env' ? 'the workspace saved by `sutramx login` (SUTRAMX_API_KEY overrides the saved key)' : 'the workspace saved by `sutramx login`'],
+    ];
+    for (const [expected, source] of expectations) {
+        if (!expected || expected === actual) continue;
+        const message = `this API key acts on workspace ${actual ?? '(unknown)'}, not ${expected} (${source})`;
+        if (destructive) blockers.push(`${message}; pass --workspace ${actual ?? '<id>'} to confirm deleting in that workspace`);
+        else warnings.push(message);
+        break;
+    }
+    return { warnings, blockers };
 }
 
 /** The plan for --json output: integration secrets from the file are masked. */
@@ -184,6 +303,12 @@ function errorText(error: unknown): string {
 }
 
 export interface ApplyOptions extends Required<PlanOptions> {
+    /**
+     * The plan the user approved. Status page and integration changes are
+     * applied only if they are still the ones shown (clientPlanFingerprint);
+     * without it, apply plans first.
+     */
+    reviewed?: WorkspacePlan;
     continueOnError?: boolean;
     /** plan_fingerprint of the plan the user approved. */
     expectedFingerprint?: string;
@@ -202,6 +327,12 @@ export async function applyPlan(
         steps.push(step);
         onStep(step);
     };
+    const reviewed = options.reviewed ?? await buildPlan(api, manifest, options);
+    const leaving = leavingMonitorIds(reviewed.monitors);
+    // 0. Before anything changes: status pages and integrations must still be
+    // what was shown (the monitor part is checked by the API's fingerprint).
+    const current = await planOtherResources(api, manifest, options, leaving);
+    if (clientPlanFingerprint(current.statusPages, current.integrations) !== reviewed.fingerprint) throw new PlanChangedError();
 
     // 1. Monitors, server side (same rules as the dashboard).
     let applyResponse: { ok: boolean; results: MonitorApplyResult[]; };
@@ -235,10 +366,21 @@ export async function applyPlan(
     ]);
     const resolver = resolverFor(remoteMonitors, manifest);
     let failed = !applyResponse.ok;
+    const integrationChanges = planIntegrations(manifest.integrations || [], remoteConnections, resolver, { prune: options.pruneIntegrations });
+    const pageChanges = planStatusPages(manifest.status_pages || [], remotePages, resolver);
+    // Same changes as reviewed, now with the new monitors' ids; anything else
+    // (someone edited an integration meanwhile) is not applied.
+    const stale = clientPlanFingerprint(pageChanges, integrationChanges) !== reviewed.fingerprint;
+    const staleError = 'changed since the plan was shown, so it was not applied; run `sutramx apply` again to review it';
 
-    for (const change of planIntegrations(manifest.integrations || [], remoteConnections, resolver, { prune: options.pruneIntegrations })) {
+    for (const change of integrationChanges) {
         if (change.action === 'noop') continue;
         const label = `${change.type}/${change.name}`;
+        if (stale) {
+            failed = true;
+            record({ kind: 'integration', action: change.action, label, status: 'failed', error: staleError });
+            continue;
+        }
         if (failed && !options.continueOnError) {
             record({ kind: 'integration', action: change.action, label, status: 'skipped' });
             continue;
@@ -249,6 +391,12 @@ export async function applyPlan(
             } else {
                 const integration = change.desired!;
                 const { routing } = resolveRouting(integration.routing, resolver);
+                // Never narrow routing silently: a dropped key (or an empty
+                // list, which routes nothing) is not what the file says.
+                const missing = routing.scope === 'monitors' ? (integration.routing?.monitors || []).filter((key) => !resolver.idFor(key)) : [];
+                if (missing.length || (routing.scope === 'monitors' && !routing.monitor_ids?.length)) {
+                    throw new Error(`routing names monitors that do not exist: ${missing.join(', ') || '(none listed)'}`);
+                }
                 const body = { ...integration.config, name: integration.name, routing };
                 if (change.action === 'create') await api.post(`/integrations/${encodeURIComponent(integration.type)}/connections`, body);
                 else await api.put(`/integrations/connections/${encodeURIComponent(String(change.id))}`, body);
@@ -260,8 +408,13 @@ export async function applyPlan(
         }
     }
 
-    for (const change of planStatusPages(manifest.status_pages || [], remotePages, resolver)) {
+    for (const change of pageChanges) {
         if (change.action === 'noop') continue;
+        if (stale) {
+            failed = true;
+            record({ kind: 'status_page', action: change.action, label: change.slug, status: 'failed', error: staleError });
+            continue;
+        }
         if (failed && !options.continueOnError) {
             record({ kind: 'status_page', action: change.action, label: change.slug, status: 'skipped' });
             continue;

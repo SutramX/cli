@@ -19,6 +19,7 @@ const ORPHAN = { id: '22222222-2222-4222-8222-222222222222', external_id: 'old',
 let calls: Array<{ method: string; url: string; body?: any; }> = [];
 let fingerprint: string | undefined;
 let planDeletes = true;
+let planReplace = false;
 let applyStatus = 200;
 let server: http.Server;
 let baseUrl = '';
@@ -38,6 +39,7 @@ before(async () => {
             if (route === 'POST /automation/monitors/plan') {
                 const changes = [
                     { action: 'create', key: 'api', name: 'API', type: 'http', monitor_id: null, changes: [] },
+                    ...(planReplace ? [{ action: 'replace', key: KEPT.external_id, name: KEPT.name, type: 'ping', monitor_id: KEPT.id, changes: [{ field: 'type', from: 'http', to: 'ping' }] }] : []),
                     ...(body.prune && planDeletes ? [{ action: 'delete', key: ORPHAN.external_id, name: ORPHAN.name, type: 'http', monitor_id: ORPHAN.id, changes: [] }] : []),
                 ];
                 return send(200, { changes, summary: {}, ...(fingerprint ? { plan_fingerprint: fingerprint } : {}) });
@@ -62,6 +64,7 @@ beforeEach(() => {
     calls = [];
     fingerprint = undefined;
     planDeletes = true;
+    planReplace = false;
     applyStatus = 200;
 });
 
@@ -177,4 +180,54 @@ test('a plain-http API URL that is not loopback is refused before the key is sen
     assert.equal(result.code, 1);
     assert.match(result.stderr, /https/);
     assert.equal(calls.length, 0);
+});
+
+test('a type-change replace is destructive: refused without --allow-replace or --prune, sent with the fingerprint when allowed', async () => {
+    fingerprint = 'fp_replace';
+    planReplace = true;
+    const refused = await sutramx(['apply', '-f', manifest(), '--auto-approve']);
+    assert.equal(refused.code, 1);
+    assert.match(refused.stderr, /1 monitor changed type and would be deleted with its history and created again; pass --allow-replace/);
+    assert.equal(applyCalls().length, 0);
+
+    const allowed = await sutramx(['apply', '-f', manifest(), '--auto-approve', '--allow-replace']);
+    assert.equal(allowed.code, 0, allowed.stderr);
+    assert.match(allowed.stdout, /1 to replace/);
+    assert.equal(applyCalls()[0].body.expected_fingerprint, 'fp_replace');
+    assert.equal(applyCalls()[0].body.prune, false);
+});
+
+test('older API without fingerprints: a replace needs --force-prune-without-plan-check too', async () => {
+    planReplace = true;
+    const refused = await sutramx(['apply', '-f', manifest(), '--auto-approve', '--allow-replace']);
+    assert.equal(refused.code, 1);
+    assert.match(refused.stderr, /cannot verify .*1 monitor shown/);
+    const forced = await sutramx(['apply', '-f', manifest(), '--auto-approve', '--allow-replace', '--force-prune-without-plan-check']);
+    assert.equal(forced.code, 0, forced.stderr);
+    assert.equal(applyCalls()[0].body.allow_prune_without_fingerprint, true);
+});
+
+test('SUTRAMX_API_KEY for another workspace than the saved login: plan shows it, a prune is refused unless --workspace confirms', async () => {
+    fingerprint = 'fp_ws';
+    const config = join(mkdtempSync(join(tmpdir(), 'sutramx-cfg-')), 'credentials.json');
+    writeFileSync(config, JSON.stringify({ api_key: 'sk_saved', workspace_id: 'ws_saved' }), { mode: 0o600 });
+    const env = { SUTRAMX_CONFIG: config };
+
+    const plan = await sutramx(['plan', '-f', manifest()], { env });
+    assert.equal(plan.code, 0, plan.stderr);
+    assert.match(plan.stdout, /Workspace: ws_1/);
+    assert.match(plan.stdout, /acts on workspace ws_1, not ws_saved/);
+
+    const refused = await sutramx(['apply', '-f', manifest(), '--prune', '--auto-approve'], { env });
+    assert.equal(refused.code, 1);
+    assert.match(refused.stderr, /acts on workspace ws_1, not ws_saved .*pass --workspace ws_1/);
+    assert.equal(applyCalls().length, 0);
+
+    const wrong = await sutramx(['apply', '-f', manifest(), '--auto-approve', '--workspace', 'ws_saved'], { env });
+    assert.equal(wrong.code, 1);
+    assert.equal(applyCalls().length, 0);
+
+    const confirmed = await sutramx(['apply', '-f', manifest(), '--prune', '--auto-approve', '--workspace', 'ws_1'], { env });
+    assert.equal(confirmed.code, 0, confirmed.stderr);
+    assert.equal(applyCalls().length, 1);
 });

@@ -49,7 +49,7 @@ A key acts on the one workspace it was created in. Keys have one of three access
 | `sutramx validate [-f file]` | check the file locally |
 | `sutramx plan [--detailed-exitcode]` | what `apply` would change |
 | `sutramx diff [--detailed-exitcode]` | the plan with every field shown old -> new |
-| `sutramx apply [--auto-approve \| -y, --yes] [--continue-on-error] [--allow-delete-all] [--force-prune-without-plan-check]` | make SutramX match the file |
+| `sutramx apply [--auto-approve \| -y, --yes] [--continue-on-error] [--allow-replace] [--allow-delete-all] [--force-prune-without-plan-check]` | make SutramX match the file |
 
 `monitors`, `incidents` and `status-pages` also answer to `monitor`, `incident` and `status-page`. Status pages are changed with `sutramx.yml` (or the dashboard), not with single commands. Every command accepts the global `--api-url <url>` (or `SUTRAMX_API_URL`); `sutramx --version` prints the version and `sutramx <command> --help` lists a command's options.
 
@@ -57,7 +57,7 @@ A key acts on the one workspace it was created in. Keys have one of three access
 
 Maintenance windows silence alerts, so creating, changing and deleting them is owner-only: the API refuses every API key (`403 WORKSPACE_OWNER_REQUIRED`), and the CLI only lists them. Manage them in the dashboard.
 
-`plan`, `diff` and `apply` accept `-f, --file <path>` (default `sutramx.yml`), `--prune` / `--no-prune`, `--adopt-by-name`, `--prune-integrations` and `--json`. Nothing is ever deleted without `--prune` (monitors) or `--prune-integrations` (integrations) on the command line: `settings.prune` / `settings.prune_integrations` in the file only produce a warning. With `--detailed-exitcode`, `plan` and `diff` exit 0 when nothing would change, 2 when something would, 1 on error. `apply` shows the plan and asks for confirmation on a terminal (naming how many monitors would be deleted); in CI pass `--auto-approve` or `--yes` (without it a non-interactive apply is refused). `--allow-delete-all` lets a prune delete every managed monitor when the file declares none (otherwise refused).
+`plan`, `diff` and `apply` accept `-f, --file <path>` (default `sutramx.yml`), `--prune` / `--no-prune`, `--adopt-by-name`, `--prune-integrations`, `--workspace <id>` and `--json`. Nothing is ever deleted without `--prune` (monitors) or `--prune-integrations` (integrations) on the command line: `settings.prune` / `settings.prune_integrations` in the file only produce a warning. With `--detailed-exitcode`, `plan` and `diff` exit 0 when nothing would change, 2 when something would, 1 on error. `apply` shows the plan with the target workspace and asks for confirmation on a terminal (naming the workspace and how many monitors would be deleted or replaced and integrations deleted); in CI pass `--auto-approve` or `--yes` (without it a non-interactive apply is refused). `--allow-delete-all` lets a prune delete every managed monitor when the file declares none (otherwise refused).
 
 `apply` applies exactly the plan it showed: it sends the plan's fingerprint, and if the workspace changed in between the API refuses (`409 PLAN_CHANGED`) and nothing is applied; run `apply` again to review the new plan. Against an older API that returns no plan fingerprint, a prune that would delete monitors is refused unless you pass `--force-prune-without-plan-check` (a prune that shows no deletes is applied without prune).
 
@@ -75,6 +75,7 @@ settings:
                           # keyed monitors that are not in this file (including ones created
                           # by Terraform or the MCP server)
   adopt_by_name: false    # true: first apply links existing monitors with the same name and type
+  # workspace_id: ...     # optional: apply refuses deletes/replaces when the API key acts on another workspace
 
 monitors:
   - key: homepage         # stable id, unique per workspace: letters, digits, . _ : / -
@@ -110,9 +111,9 @@ integrations:             # needs an Automation access key
 
 How it reconciles:
 
-- **Monitors** are matched by `key` and planned by the SutramX API with the same rules as the dashboard (plan limits, minimum interval, allowed locations, URL safety). A field you leave out is not managed: an existing monitor keeps its value. `config`, when present, is managed as a whole. Changing `type` shows as a **replace** (delete, then create: the old monitor's history goes). Monitors without a key (made in the dashboard) are never changed unless you adopt them.
+- **Monitors** are matched by `key` and planned by the SutramX API with the same rules as the dashboard (plan limits, minimum interval, allowed locations, URL safety). A field you leave out is not managed: an existing monitor keeps its value. `config`, when present, is managed as a whole. Changing `type` shows as a **replace** (delete, then create: the old monitor's history goes); `apply` refuses it unless you pass `--allow-replace` (or `--prune`). Monitors without a key (made in the dashboard) are never changed unless you adopt them.
 - **Status pages** are created or updated; monitors are listed in order with optional sections. Delete pages in the dashboard.
-- **Integrations** are created or updated (secrets are stored encrypted and only read back masked, so a secret counts as changed when its visible tail differs). With `--prune-integrations`, connections of the declared types that are not in the file are deleted.
+- **Integrations** are created or updated (secrets are stored encrypted and only read back masked, so a secret counts as changed when its visible tail differs). With `--prune-integrations`, connections of the declared types that are not in the file are deleted. Names are compared as SutramX stores them (trimmed, runs of spaces collapsed). Routing to a monitor key that is neither in the file nor in the workspace is an error, not silently dropped.
 - `${VAR}` and `${VAR:-default}` read environment variables; a missing variable is an error. `$${VAR}` is a literal.
 
 Apply order: monitors first, then integrations and status pages, so new monitors can be referenced by key in the same run. Apply stops at the first failure (completed changes are kept) unless `--continue-on-error`. `plan` warns when the plan's monitor allowance or minimum interval would make apply fail, and apply refuses to start when the file changes integrations but the key lacks Automation access.
@@ -120,7 +121,7 @@ Apply order: monitors first, then integrations and status pages, so new monitors
 ### Moving an existing workspace to code
 
 ```bash
-sutramx init --from-workspace   # writes keys for every monitor, with adopt_by_name: true
+sutramx init --from-workspace   # writes keys for every monitor (browser checks are skipped: they stay in the dashboard), with adopt_by_name: true
 sutramx plan                    # should only show the links
 sutramx apply
 ```
@@ -162,7 +163,7 @@ MIT, see [LICENSE](LICENSE).
 - **`${VAR}` in sutramx.yml**: the file may not read `SUTRAMX_API_KEY`, `SUTRAMX_CONFIG`, `GITHUB_TOKEN`, `GH_TOKEN`, `ACTIONS_*`, `INPUT_*`, `NPM_TOKEN`, `NODE_AUTH_TOKEN`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `CI_JOB_TOKEN`, `CI_JOB_JWT*` or `SYSTEM_ACCESSTOKEN`, so a pull request cannot copy credentials into a monitor or into the plan comment. Set `SUTRAMX_ALLOWED_ENV="SLACK_*,PAGERDUTY_KEY"` to allow only the listed variables.
 - **Plan output**: integration config values whose names look like credentials (`*url*`, `*token*`, `*secret*`, `*key*`, ...) are shown as `(secret, not shown)` in `plan`, `diff` and `--json`.
 - **Deletes**: only with `--prune` / `--prune-integrations` on the command line, never from the file alone. `apply` with prune refuses to delete every managed monitor when the file declares none (an empty or truncated file); pass `--allow-delete-all` if that is intended. `monitors delete` and `incidents note --public` ask first unless `--yes`.
-- **Plan = apply**: `apply` sends the fingerprint of the plan it showed; the API refuses a changed plan (`409 PLAN_CHANGED`).
-- **Workspace scope**: a key only ever acts on its own workspace; the CLI takes the API URL only from `--api-url`, `SUTRAMX_API_URL` or the credentials file, never from `sutramx.yml`. The key is never printed.
+- **Plan = apply**: `apply` sends the fingerprint of the plan it showed; the API refuses a changed plan (`409 PLAN_CHANGED`). Status page and integration changes are planned once, shown, and applied only if they are still the ones shown.
+- **Workspace scope**: a key only ever acts on its own workspace, and `plan` / `apply` print which one. When that workspace differs from the one saved by `sutramx login` (e.g. `SUTRAMX_API_KEY` set for another workspace) or from `settings.workspace_id`, `apply` refuses deletes and replaces unless `--workspace <id>` names the key's workspace (and `--workspace` always refuses a key for another workspace); the CLI takes the API URL only from `--api-url`, `SUTRAMX_API_URL` or the credentials file, never from `sutramx.yml`. The key is never printed.
 - **Retries**: 429 answers are retried (honouring `Retry-After`, at most 4 attempts); 502/503/504 and network errors are retried only for GET/PUT/DELETE.
 - **GitHub Action**: the key is masked with `::add-mask::`, `cli-version` must be a registry version or tag, and inputs reach the script only through environment variables. Pin `cli-version` to an exact version in production.
