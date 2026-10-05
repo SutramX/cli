@@ -7,7 +7,7 @@ defaults:
   tags: [prod]
 
 settings:
-  prune: true            # delete keyed monitors removed from this file
+  prune: true            # reminder only: deletes need `apply --prune` (action input prune: true)
   adopt_by_name: false
 
 monitors:

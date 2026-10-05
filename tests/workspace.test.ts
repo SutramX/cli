@@ -4,7 +4,7 @@ import type { AddressInfo } from 'node:net';
 import { after, before, test } from 'node:test';
 import { SutramXApi } from '../src/api.js';
 import { parseManifest } from '../src/manifest.js';
-import { applyPlan, buildPlan, effectiveOptions } from '../src/workspace.js';
+import { applyPlan, buildPlan, effectiveOptions, pruneSettingWarnings } from '../src/workspace.js';
 
 /** Fake API: monitors are planned/applied by the server, the rest by the CLI. */
 const calls: Array<{ method: string; url: string; body?: any; }> = [];
@@ -138,8 +138,12 @@ test('apply creates monitors first, then wires new monitor ids into integrations
     assert.equal(again.hasChanges, false, JSON.stringify(again, null, 1));
 });
 
-test('settings in the file are the default; flags override them', () => {
-    const manifest = parseManifest('settings: { prune: true, adopt_by_name: true }\nmonitors: []\n', {});
-    assert.deepEqual(effectiveOptions(manifest, {}), { prune: true, adoptByName: true, pruneIntegrations: false });
+test('adopt_by_name may come from the file; deletes only from command-line flags', () => {
+    const manifest = parseManifest('settings: { prune: true, adopt_by_name: true, prune_integrations: true }\nmonitors: []\n', {});
+    assert.deepEqual(effectiveOptions(manifest, {}), { prune: false, adoptByName: true, pruneIntegrations: false });
+    assert.equal(effectiveOptions(manifest, { prune: true }).prune, true);
     assert.equal(effectiveOptions(manifest, { prune: false }).prune, false);
+    assert.equal(effectiveOptions(manifest, { pruneIntegrations: true }).pruneIntegrations, true);
+    assert.equal(pruneSettingWarnings(manifest, {}).length, 2);
+    assert.deepEqual(pruneSettingWarnings(manifest, { prune: true, pruneIntegrations: true }), []);
 });

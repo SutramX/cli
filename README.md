@@ -15,9 +15,9 @@ Node.js 20 or newer is required.
 | Source | Used when |
 |---|---|
 | `SUTRAMX_API_KEY` (and optionally `SUTRAMX_API_URL`) | set; recommended for CI |
-| `sutramx login` | saves the key to `~/.config/sutramx/credentials.json` (mode 0600; `$XDG_CONFIG_HOME` and `$SUTRAMX_CONFIG` are honoured) |
+| `sutramx login` | saves the key to `~/.config/sutramx/credentials.json` (mode 0600; `$XDG_CONFIG_HOME` and `$SUTRAMX_CONFIG` are honoured). The API URL is saved only when you pass `--api-url` to `login`; `SUTRAMX_API_URL` in the environment applies to that run only |
 
-A key acts on the one workspace it was created in. Keys have one of three access levels, chosen when the key is created: **Read-only** (`whoami`, `monitors list|get`, `incidents list|get`, `maintenance list`, `regions`, `init --from-workspace`, `plan` and `diff` work; `apply`, `monitors create|pause|resume|delete|adopt`, `incidents ack|resolve` and every other change are refused with `403 READ_ONLY_ACCESS`; use it for CI jobs that only post the plan), **Standard** and **Automation**. A standard key can manage monitors and status pages. To manage **integrations** from `sutramx.yml`, create the key with **Automation access**. Per-monitor alert recipients (`config.notification_emails`) also need an Automation access key; a standard key gets a clear error instead of a change that never applies.
+A key acts on the one workspace it was created in. Keys have one of three access levels, chosen when the key is created: **Read-only** (`whoami`, `monitors list|get|checks`, `incidents list|get`, `status-pages list|get`, `uptime`, `maintenance list`, `regions`, `init --from-workspace`, `plan` and `diff` work; `apply`, `monitors create|update|pause|resume|delete|adopt|run-check`, `incidents ack|resolve|note` and every other change are refused with `403 READ_ONLY_ACCESS`; use it for CI jobs that only post the plan), **Standard** and **Automation**. A standard key can manage monitors and status pages. To manage **integrations** from `sutramx.yml`, create the key with **Automation access**. Per-monitor alert recipients (`config.notification_emails`) also need an Automation access key; a standard key gets a clear error instead of a change that never applies.
 
 ## Commands
 
@@ -27,30 +27,39 @@ A key acts on the one workspace it was created in. Keys have one of three access
 | `sutramx logout` | remove the saved key |
 | `sutramx whoami [--json]` | workspace, plan and limits |
 | `sutramx monitors list [--tag t] [--status down] [--json]` | monitors with live status (`--status`: up, down, degraded, paused, pending, maintenance); alias `ls` |
-| `sutramx monitors get <id or key>` | one monitor as JSON |
+| `sutramx monitors get <id or key> [--json]` | one monitor: a readable summary, or the full JSON with `--json` |
 | `sutramx monitors create --name N [--url U] [--type api] [--interval 60] [--region fra1 --region usa-az-probe] [--tag prod] [--config '{...}'] [--key k] [--paused] [--json]` | create (with `--key`: create or update) |
+| `sutramx monitors update <id or key> [--name N] [--url U] [--interval 60] [--tag t ...] [--region fra1 ...] [--config '{...}'] [--json]` | change only the options given; `--tag`, `--region` and `--config` replace the whole list/object (start from `monitors get --json`) |
 | `sutramx monitors pause <id or key>` / `resume <id or key>` | stop or restart checks |
+| `sutramx monitors checks <id or key> [--limit 50] [--before <time>] [--region fra1] [--status problem] [--json]` | check history, newest first (`--status`: up, down, degraded, problem) |
+| `sutramx monitors run-check <id or key> [--json]` | run one real check now and record it (refused for paused monitors; rate limited) |
 | `sutramx monitors delete <id or key> [-y, --yes]` | delete with its history (asks first unless `--yes`); alias `rm` |
 | `sutramx monitors adopt <id> <key>` | let `sutramx.yml` manage an existing monitor |
 | `sutramx incidents list [--status ongoing] [--monitor <id or key>] [--search t] [--from 2026-10-01] [--to ...] [--page 2] [--page-size 50] [--json]` | incidents, newest first (`--status`: all, ongoing, resolved, acknowledged, suppressed; default all); alias `ls` |
 | `sutramx incidents get <id> [--json]` | one incident (`--json` includes the timeline) |
 | `sutramx incidents ack <id> [--json]` | acknowledge an ongoing incident (stops escalation); alias `acknowledge` |
 | `sutramx incidents resolve <id> [--note "what was done"] [--json]` | resolve by hand; fails with `409 INCIDENT_RESOLVED` if already resolved |
+| `sutramx incidents note <id> "text" [--public] [-y, --yes] [--json]` | add an internal timeline note; `--public` publishes it as an update on your status pages and asks first unless `--yes` |
+| `sutramx status-pages list [--json]` | status pages with visibility and monitor count; alias `ls` |
+| `sutramx status-pages get <id or slug> [--json]` | one status page with its monitors |
+| `sutramx uptime [--days 30] [--monitor <id or key>] [--json]` | uptime %, incidents, MTTR and health per monitor, plus SLO error budgets (`--days`: 7, 14, 30, 90); alias `report` |
 | `sutramx maintenance list [--status ongoing] [--json]` | maintenance windows with their scope and recurrence (`--status`: scheduled, ongoing, completed, cancelled); alias `ls` |
 | `sutramx regions [--json]` | probe location codes (works without a key) |
 | `sutramx init [-f file] [--from-workspace] [--force]` | write a starter `sutramx.yml`, or one describing what exists now |
 | `sutramx validate [-f file]` | check the file locally |
 | `sutramx plan [--detailed-exitcode]` | what `apply` would change |
 | `sutramx diff [--detailed-exitcode]` | the plan with every field shown old -> new |
-| `sutramx apply [--auto-approve] [--continue-on-error] [--allow-delete-all]` | make SutramX match the file |
+| `sutramx apply [--auto-approve \| -y, --yes] [--continue-on-error] [--allow-delete-all] [--force-prune-without-plan-check]` | make SutramX match the file |
 
-`monitors` and `incidents` also answer to `monitor` and `incident`. Every command accepts the global `--api-url <url>` (or `SUTRAMX_API_URL`); `sutramx --version` prints the version and `sutramx <command> --help` lists a command's options.
+`monitors`, `incidents` and `status-pages` also answer to `monitor`, `incident` and `status-page`. Status pages are changed with `sutramx.yml` (or the dashboard), not with single commands. Every command accepts the global `--api-url <url>` (or `SUTRAMX_API_URL`); `sutramx --version` prints the version and `sutramx <command> --help` lists a command's options.
 
 **Monitor types** (`--type`, or `type:` in `sutramx.yml`): `http` (default), `api`, `ping`, `port`, `udp`, `dns`, `multistep` and `cron`. `http` and `api` need a URL; the others take their target from `config`: `ping` `{"host": ...}`, `port`/`udp` `{"host": ..., "port": ...}`, `dns` `{"hostname": "example.com", "record_type": "A"}` (A, AAAA, CNAME, MX, TXT or NS), `multistep` `{"steps": [{"name": ..., "method": ..., "url": ...}, ...]}`, `cron` `{"cron_expression": "*/5 * * * *"}`. `dns` and `multistep` monitors need a plan that includes them. Check intervals are 15 to 900 seconds; your plan sets the minimum (see `sutramx whoami`).
 
 Maintenance windows silence alerts, so creating, changing and deleting them is owner-only: the API refuses every API key (`403 WORKSPACE_OWNER_REQUIRED`), and the CLI only lists them. Manage them in the dashboard.
 
-`plan`, `diff` and `apply` accept `-f, --file <path>` (default `sutramx.yml`), `--prune` / `--no-prune`, `--adopt-by-name`, `--prune-integrations` and `--json`. With `--detailed-exitcode`, `plan` and `diff` exit 0 when nothing would change, 2 when something would, 1 on error. `apply` asks for confirmation on a terminal; in CI pass `--auto-approve` (without it a non-interactive apply is refused). `--allow-delete-all` lets a prune delete every managed monitor when the file declares none (otherwise refused).
+`plan`, `diff` and `apply` accept `-f, --file <path>` (default `sutramx.yml`), `--prune` / `--no-prune`, `--adopt-by-name`, `--prune-integrations` and `--json`. Nothing is ever deleted without `--prune` (monitors) or `--prune-integrations` (integrations) on the command line: `settings.prune` / `settings.prune_integrations` in the file only produce a warning. With `--detailed-exitcode`, `plan` and `diff` exit 0 when nothing would change, 2 when something would, 1 on error. `apply` shows the plan and asks for confirmation on a terminal (naming how many monitors would be deleted); in CI pass `--auto-approve` or `--yes` (without it a non-interactive apply is refused). `--allow-delete-all` lets a prune delete every managed monitor when the file declares none (otherwise refused).
+
+`apply` applies exactly the plan it showed: it sends the plan's fingerprint, and if the workspace changed in between the API refuses (`409 PLAN_CHANGED`) and nothing is applied; run `apply` again to review the new plan. Against an older API that returns no plan fingerprint, a prune that would delete monitors is refused unless you pass `--force-prune-without-plan-check` (a prune that shows no deletes is applied without prune).
 
 ## sutramx.yml
 
@@ -62,8 +71,9 @@ defaults:                 # merged into every monitor
   tags: [prod]
 
 settings:
-  prune: false            # true: delete monitors that have a key but are not in this file
-                          # (including keyed monitors created by Terraform or the MCP server)
+  prune: false            # true: plan/apply warn that --prune is needed; only `apply --prune` deletes
+                          # keyed monitors that are not in this file (including ones created
+                          # by Terraform or the MCP server)
   adopt_by_name: false    # true: first apply links existing monitors with the same name and type
 
 monitors:
@@ -130,7 +140,7 @@ Outputs: `has-changes` and `plan` (the text output). The plan is also written to
 
 ## API used
 
-`GET /automation/whoami`, `POST /automation/monitors/plan`, `POST /automation/monitors/apply`, `GET|PUT|DELETE /automation/monitors/:key`, `PUT /automation/monitors/by-id/:id/key`, plus the regular `/monitors`, `/incidents` (list, get, acknowledge, resolve), `/maintenance` (list), `/status/pages`, `/integrations` and `/catalog/regions` endpoints.
+`GET /automation/whoami`, `POST /automation/monitors/plan`, `POST /automation/monitors/apply`, `GET|PUT|DELETE /automation/monitors/:key`, `PUT /automation/monitors/by-id/:id/key`, plus the regular `/monitors` (including `/:id/checks`, `/:id/run-check`, `/:id/regions`), `/incidents` (list, get, acknowledge, resolve, notes), `/maintenance` (list), `/status/pages`, `/reliability` (overview, monitor), `/integrations` and `/catalog/regions` endpoints.
 
 ## Development
 
@@ -151,6 +161,8 @@ MIT, see [LICENSE](LICENSE).
 - **Key handling**: prefer `echo "$KEY" | sutramx login` or the hidden prompt over `--api-key` (visible in `ps` and shell history). The credentials file is written `0600` via an exclusive temp file and rename (a symlink at the path is replaced, not followed); a warning is printed if it becomes readable by others.
 - **`${VAR}` in sutramx.yml**: the file may not read `SUTRAMX_API_KEY`, `SUTRAMX_CONFIG`, `GITHUB_TOKEN`, `GH_TOKEN`, `ACTIONS_*`, `INPUT_*`, `NPM_TOKEN`, `NODE_AUTH_TOKEN`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `CI_JOB_TOKEN`, `CI_JOB_JWT*` or `SYSTEM_ACCESSTOKEN`, so a pull request cannot copy credentials into a monitor or into the plan comment. Set `SUTRAMX_ALLOWED_ENV="SLACK_*,PAGERDUTY_KEY"` to allow only the listed variables.
 - **Plan output**: integration config values whose names look like credentials (`*url*`, `*token*`, `*secret*`, `*key*`, ...) are shown as `(secret, not shown)` in `plan`, `diff` and `--json`.
-- **Mass deletes**: `apply` with prune refuses to delete every managed monitor when the file declares none (an empty or truncated file); pass `--allow-delete-all` if that is intended.
+- **Deletes**: only with `--prune` / `--prune-integrations` on the command line, never from the file alone. `apply` with prune refuses to delete every managed monitor when the file declares none (an empty or truncated file); pass `--allow-delete-all` if that is intended. `monitors delete` and `incidents note --public` ask first unless `--yes`.
+- **Plan = apply**: `apply` sends the fingerprint of the plan it showed; the API refuses a changed plan (`409 PLAN_CHANGED`).
+- **Workspace scope**: a key only ever acts on its own workspace; the CLI takes the API URL only from `--api-url`, `SUTRAMX_API_URL` or the credentials file, never from `sutramx.yml`. The key is never printed.
 - **Retries**: 429 answers are retried (honouring `Retry-After`, at most 4 attempts); 502/503/504 and network errors are retried only for GET/PUT/DELETE.
 - **GitHub Action**: the key is masked with `::add-mask::`, `cli-version` must be a registry version or tag, and inputs reach the script only through environment variables. Pin `cli-version` to an exact version in production.

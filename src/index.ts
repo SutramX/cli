@@ -8,12 +8,13 @@ import { apiFromEnvironment, credentialsPath, NotLoggedInError, removeCredential
 import { exportMonitors, SAMPLE_MANIFEST } from './exportManifest.js';
 import { loadManifest, ManifestError } from './manifest.js';
 import {
-    acknowledgeIncident, getIncident, INCIDENT_STATUSES, listIncidents, listMaintenance, MAINTENANCE_STATUSES,
-    renderIncident, renderIncidentTable, renderMaintenanceTable, resolveIncident,
+    acknowledgeIncident, addIncidentNote, CHECK_STATUSES, getIncident, getStatusPage, INCIDENT_STATUSES, listChecks, listIncidents, listMaintenance,
+    listStatusPages, MAINTENANCE_STATUSES, MONITOR_STATUSES, renderChecks, renderIncident, renderIncidentTable, renderMaintenanceTable, renderMonitor,
+    renderRunCheck, renderStatusPage, renderStatusPages, renderUptimeReport, REPORT_DAYS, requireRegionCode, resolveIncident, runCheck, updateMonitor, uptimeReport,
 } from './operations.js';
 import { bold, clean, cyan, dim, green, red, renderPlan, renderStep, table, yellow } from './render.js';
 import { VERSION } from './version.js';
-import { applyPlan, buildPlan, effectiveOptions, PlanOptions, redactedPlan } from './workspace.js';
+import { applyPlan, buildPlan, effectiveOptions, PlanChangedError, PlanOptions, pruneSettingWarnings, redactedPlan } from './workspace.js';
 
 /** Exit codes: 0 ok / no changes, 1 error, 2 changes present (plan --detailed-exitcode). */
 
@@ -85,12 +86,15 @@ program.command('login')
     .option('--api-key <key>', 'API key (avoid: visible in shell history and `ps`; prefer the prompt or stdin)')
     .action(async (options: { apiKey?: string; }) => {
         const apiUrl = (program.opts() as GlobalOptions).apiUrl;
+        // Only an explicit --api-url is saved; SUTRAMX_API_URL from the
+        // environment applies to this run but is not made permanent.
+        const persistApiUrl = program.getOptionValueSource('apiUrl') === 'cli' ? apiUrl : undefined;
         if (options.apiKey) process.stderr.write(yellow('Warning: --api-key is visible to other local users (ps) and in shell history. Prefer `echo "$KEY" | sutramx login` or the prompt.\n'));
         const key = (options.apiKey || await readSecret('SutramX API key (sk_...): ')).trim();
         if (!key.startsWith('sk_')) throw new Error('SutramX API keys start with "sk_".');
         const client = new SutramXApi(key, apiUrl || resolveAuth({ apiUrl })?.apiUrl);
         const me = await client.get<Record<string, any>>('/automation/whoami');
-        const path = writeCredentials({ api_key: key, ...(apiUrl ? { api_url: apiUrl } : {}), workspace_id: me.workspace_id });
+        const path = writeCredentials({ api_key: key, ...(persistApiUrl ? { api_url: client.baseUrl } : {}), workspace_id: me.workspace_id });
         stdout.write(`${green('Logged in')} to workspace ${bold(clean(me.workspace_id))} (${clean(me.plan)} plan, ${clean(me.api_key_access)} access). Saved to ${path}\n`);
     });
 
@@ -121,7 +125,7 @@ const monitors = program.command('monitors').alias('monitor').description('List 
 monitors.command('list').alias('ls')
     .description('List monitors with their status')
     .option('--tag <tag>', 'only monitors with this tag')
-    .option('--status <status>', 'only monitors in this status (up, down, degraded, paused, pending, maintenance)')
+    .addOption(new Option('--status <status>', 'only monitors in this status').choices(MONITOR_STATUSES))
     .option('--json', 'JSON output')
     .action(async (options: { tag?: string; status?: string; json?: boolean; }) => {
         let list = await api().get<Array<Record<string, any>>>('/monitors', { tag: options.tag });
@@ -157,12 +161,32 @@ function monitorId(monitor: Record<string, any>): string {
 
 monitors.command('get <idOrKey>')
     .description('Show one monitor by id or key')
-    .action(async (idOrKey: string) => {
-        printJson(await api().get(monitorPath(idOrKey)));
+    .option('--json', 'JSON output (full config)')
+    .action(async (idOrKey: string, options: { json?: boolean; }) => {
+        const monitor = await api().get<Record<string, any>>(monitorPath(idOrKey));
+        if (options.json) return printJson(monitor);
+        stdout.write(`${renderMonitor(monitor)}\n`);
     });
+
+/** Monitor id for an id or key argument (one lookup for keys). */
+async function resolveMonitorId(client: SutramXApi, idOrKey: string): Promise<string> {
+    return UUID.test(idOrKey) ? idOrKey : monitorId(await client.get<Record<string, any>>(monitorPath(idOrKey)));
+}
 
 function collect(value: string, previous: string[] = []) {
     return [...previous, value];
+}
+
+function parseConfig(value: string | undefined): Record<string, unknown> | undefined {
+    if (value === undefined) return undefined;
+    let parsed: unknown;
+    try {
+        parsed = JSON.parse(value);
+    } catch {
+        throw new Error('--config must be valid JSON');
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('--config must be a JSON object');
+    return parsed as Record<string, unknown>;
 }
 
 /** Monitor types the API accepts (POST /monitors, sutramx.yml). dns and multistep need a plan that includes them. */
@@ -194,13 +218,9 @@ monitors.command('create')
         if (options.interval) body.interval_seconds = options.interval;
         if (options.region?.length) body.regions = options.region;
         if (options.tag?.length) body.tags = options.tag;
-        if (options.config) {
-            try {
-                body.config = JSON.parse(options.config);
-            } catch {
-                throw new Error('--config must be valid JSON');
-            }
-        }
+        if (!(MONITOR_TYPES as readonly string[]).includes(options.type)) throw new Error(`--type must be one of ${MONITOR_TYPES.join(', ')}`);
+        options.region?.forEach((code: string) => requireRegionCode(code));
+        if (options.config !== undefined) body.config = parseConfig(options.config);
         const client = api();
         let monitor: Record<string, any>;
         let action = 'created';
@@ -241,6 +261,49 @@ for (const verb of ['pause', 'resume'] as const) {
         });
 }
 
+monitors.command('update <idOrKey>')
+    .description('Change a monitor (by id or key); only the options you pass change')
+    .option('--name <name>', 'display name')
+    .option('--url <url>', 'target URL')
+    .option('--interval <seconds>', 'seconds between checks', parseInterval)
+    .option('--tag <tag>', 'tag (repeatable; replaces all tags)', collect)
+    .option('--region <code>', 'probe location (repeatable; replaces all locations)', collect)
+    .option('--config <json>', 'type-specific config as JSON; replaces the whole config, so start from `monitors get --json`')
+    .option('--json', 'JSON output')
+    .action(async (idOrKey: string, options: { name?: string; url?: string; interval?: number; tag?: string[]; region?: string[]; config?: string; json?: boolean; }) => {
+        const client = api();
+        const id = await resolveMonitorId(client, idOrKey);
+        const monitor = await updateMonitor(client, id, {
+            name: options.name, url: options.url, interval_seconds: options.interval, tags: options.tag, config: parseConfig(options.config), regions: options.region,
+        });
+        if (options.json) return printJson(monitor);
+        stdout.write(`${yellow('updated')} ${bold(clean(monitor.name))} (${clean(monitor.id)})\n`);
+    });
+
+monitors.command('checks <idOrKey>')
+    .description('Check history of a monitor (by id or key), newest first')
+    .option('--limit <n>', 'rows (1-500)', parsePositive(500), 50)
+    .option('--before <time>', 'only checks before this time (ISO-8601; the "Older" cursor of the previous page)')
+    .option('--region <code>', 'only this probe location')
+    .addOption(new Option('--status <status>', 'only checks with this status (problem: every non-up check)').choices(CHECK_STATUSES))
+    .option('--json', 'JSON output')
+    .action(async (idOrKey: string, options: { limit: number; before?: string; region?: string; status?: string; json?: boolean; }) => {
+        const client = api();
+        const page = await listChecks(client, await resolveMonitorId(client, idOrKey), options);
+        if (options.json) return printJson(page);
+        stdout.write(`${renderChecks(page)}\n`);
+    });
+
+monitors.command('run-check <idOrKey>')
+    .description('Run one real check of a monitor (by id or key) now and record it')
+    .option('--json', 'JSON output')
+    .action(async (idOrKey: string, options: { json?: boolean; }) => {
+        const client = api();
+        const result = await runCheck(client, await resolveMonitorId(client, idOrKey));
+        if (options.json) return printJson(result);
+        stdout.write(`${renderRunCheck(result)}\n`);
+    });
+
 monitors.command('adopt <id> <key>')
     .description('Give an existing monitor a key so sutramx.yml manages it')
     .action(async (id: string, key: string) => {
@@ -262,7 +325,7 @@ const incidents = program.command('incidents').alias('incident').description('Li
 
 incidents.command('list').alias('ls')
     .description('List incidents, newest first')
-    .option('--status <status>', INCIDENT_STATUSES.join(', '), 'all')
+    .addOption(new Option('--status <status>', 'incident state').choices(INCIDENT_STATUSES).default('all'))
     .option('--monitor <idOrKey>', 'only incidents of this monitor (id or key)')
     .option('--search <text>', 'search monitor name or URL')
     .option('--from <time>', 'started at or after (ISO-8601)')
@@ -309,11 +372,57 @@ incidents.command('resolve <id>')
         stdout.write(`${green('resolved')} incident ${clean(incident.id)} on ${bold(clean(incident.monitor_name))}\n`);
     });
 
+incidents.command('note <id> <text>')
+    .description('Add a note to an incident timeline (internal unless --public)')
+    .option('--public', 'publish it as a public update on your status pages (asks for confirmation)')
+    .option('-y, --yes', 'do not ask for confirmation (with --public)')
+    .option('--json', 'JSON output')
+    .action(async (id: string, text: string, options: { public?: boolean; yes?: boolean; json?: boolean; }) => {
+        if (options.public && !options.yes && !(await confirm(`Publish this update on your public status pages?\n  ${clean(text).slice(0, 500)}\n`))) {
+            throw new Error('Not published (pass --yes to skip the prompt in scripts).');
+        }
+        const note = await addIncidentNote(api(), id, text, options.public === true);
+        if (options.json) return printJson({ note });
+        stdout.write(`${green('added')} ${options.public ? 'public update' : 'internal note'} to incident ${clean(id)}\n`);
+    });
+
+const statusPages = program.command('status-pages').alias('status-page').description('Status pages (read-only here; manage them with sutramx.yml or the dashboard)');
+
+statusPages.command('list').alias('ls')
+    .description('List status pages')
+    .option('--json', 'JSON output')
+    .action(async (options: { json?: boolean; }) => {
+        const pages = await listStatusPages(api());
+        if (options.json) return printJson(pages);
+        stdout.write(`${renderStatusPages(pages)}\n`);
+    });
+
+statusPages.command('get <idOrSlug>')
+    .description('Show one status page (by id or slug) with its monitors')
+    .option('--json', 'JSON output')
+    .action(async (idOrSlug: string, options: { json?: boolean; }) => {
+        const page = await getStatusPage(api(), idOrSlug);
+        if (options.json) return printJson(page);
+        stdout.write(`${renderStatusPage(page)}\n`);
+    });
+
+program.command('uptime').alias('report')
+    .description('Uptime report: uptime %, incidents, MTTR and health per monitor, plus SLO error budgets')
+    .addOption(new Option('--days <n>', 'report window').choices(REPORT_DAYS.map(String)).default('30'))
+    .option('--monitor <idOrKey>', 'only this monitor')
+    .option('--json', 'JSON output')
+    .action(async (options: { days: string; monitor?: string; json?: boolean; }) => {
+        const client = api();
+        const report = await uptimeReport(client, Number(options.days), options.monitor ? await resolveMonitorId(client, options.monitor) : undefined);
+        if (options.json) return printJson(report);
+        stdout.write(`${renderUptimeReport(report)}\n`);
+    });
+
 const maintenance = program.command('maintenance').description('Maintenance windows (alerts are silenced while one is active)');
 
 maintenance.command('list').alias('ls')
     .description('List maintenance windows (creating and deleting them is owner-only, in the dashboard)')
-    .option('--status <status>', `only windows in this state (${MAINTENANCE_STATUSES.join(', ')})`)
+    .addOption(new Option('--status <status>', 'only windows in this state').choices(MAINTENANCE_STATUSES))
     .option('--json', 'JSON output')
     .action(async (options: { status?: string; json?: boolean; }) => {
         const list = await listMaintenance(api(), options.status);
@@ -358,8 +467,8 @@ program.command('init')
 function planFlags(command: Command) {
     return command
         .option('-f, --file <path>', 'configuration file', 'sutramx.yml')
-        .option('--prune', 'delete keyed monitors that are not in the file (overrides settings.prune)')
-        .option('--no-prune', 'never delete monitors, whatever settings.prune says')
+        .option('--prune', 'delete keyed monitors that are not in the file (required for any delete; settings.prune alone does nothing)')
+        .option('--no-prune', 'never delete monitors')
         .option('--adopt-by-name', 'link existing unkeyed monitors with the same name and type')
         .option('--prune-integrations', 'delete integrations of the declared types that are not in the file')
         .option('--json', 'JSON output');
@@ -396,7 +505,9 @@ for (const name of ['plan', 'diff'] as const) {
         .option('--detailed-exitcode', 'exit 2 when there are changes')
         .action(async (options: PlanCommandOptions & { detailedExitcode?: boolean; }) => {
             const manifest = loadManifest(options.file);
-            const plan = await buildPlan(api(), manifest, effectiveOptions(manifest, flagsFrom(options)));
+            const flags = flagsFrom(options);
+            const plan = await buildPlan(api(), manifest, effectiveOptions(manifest, flags));
+            plan.warnings.push(...pruneSettingWarnings(manifest, flags));
             if (options.json) printJson(redactedPlan(plan));
             else stdout.write(`${renderPlan(plan, { detailed: name === 'diff' })}\n`);
             if (options.detailedExitcode && plan.hasChanges) process.exitCode = 2;
@@ -406,13 +517,17 @@ for (const name of ['plan', 'diff'] as const) {
 planFlags(program.command('apply'))
     .description('Make SutramX match the configuration')
     .option('--auto-approve', 'apply without asking (CI)')
+    .option('-y, --yes', 'same as --auto-approve')
     .option('--continue-on-error', 'keep going after a failed change')
     .option('--allow-delete-all', 'allow a prune that deletes every managed monitor (the file declares none)')
-    .action(async (options: PlanCommandOptions & { autoApprove?: boolean; continueOnError?: boolean; allowDeleteAll?: boolean; }) => {
+    .option('--force-prune-without-plan-check', 'with --prune against an API that cannot verify the plan (no plan fingerprint): delete anyway')
+    .action(async (options: PlanCommandOptions & { yes?: boolean; autoApprove?: boolean; continueOnError?: boolean; allowDeleteAll?: boolean; forcePruneWithoutPlanCheck?: boolean; }) => {
         const manifest = loadManifest(options.file);
         const client = api();
-        const effective = effectiveOptions(manifest, flagsFrom(options));
+        const flags = flagsFrom(options);
+        const effective = effectiveOptions(manifest, flags);
         const plan = await buildPlan(client, manifest, effective);
+        plan.warnings.push(...pruneSettingWarnings(manifest, flags));
         if (!options.json) stdout.write(`${renderPlan(plan)}\n`);
         if (!plan.hasChanges) {
             if (options.json) printJson({ ok: true, changed: false, steps: [] });
@@ -423,14 +538,30 @@ planFlags(program.command('apply'))
             // An empty or truncated file plus prune would wipe the workspace.
             plan.blockers.push(`the file declares no monitors, so prune would delete all ${deletes} managed monitors; pass --allow-delete-all if that is intended`);
         }
+        // Apply must do what was shown: the plan fingerprint makes the API
+        // refuse (409 PLAN_CHANGED) if the workspace changed in between.
+        const fingerprint = plan.monitors.plan_fingerprint;
+        let prune = effective.prune;
+        let allowPruneWithoutFingerprint = false;
+        if (prune && !fingerprint) {
+            if (deletes === 0) {
+                prune = false; // no delete was shown, so none may happen
+            } else if (options.forcePruneWithoutPlanCheck) {
+                allowPruneWithoutFingerprint = true;
+            } else {
+                plan.blockers.push(`this API cannot verify that apply deletes only the ${deletes} monitor${deletes === 1 ? '' : 's'} shown (no plan fingerprint); run without --prune, or pass --force-prune-without-plan-check`);
+            }
+        }
         if (plan.blockers.length) {
             throw new Error(`Nothing was applied:\n${plan.blockers.map((blocker) => `  - ${blocker}`).join('\n')}`);
         }
-        if (!options.autoApprove) {
-            if (!stdin.isTTY) throw new Error('Refusing to apply without confirmation: pass --auto-approve in non-interactive runs.');
-            if (!(await confirm('\nApply these changes?'))) throw new Error('Apply cancelled.');
+        if (!options.yes && !options.autoApprove) {
+            if (!stdin.isTTY) throw new Error('Refusing to apply without confirmation: pass --auto-approve (or --yes) in non-interactive runs.');
+            const question = deletes > 0 ? `\nApply these changes? ${red(`${deletes} monitor${deletes === 1 ? '' : 's'} will be deleted with ${deletes === 1 ? 'its' : 'their'} history.`)}` : '\nApply these changes?';
+            if (!(await confirm(question))) throw new Error('Apply cancelled.');
         }
-        const outcome = await applyPlan(client, manifest, { ...effective, continueOnError: options.continueOnError }, (step) => {
+        const applyOptions = { ...effective, prune, continueOnError: options.continueOnError, expectedFingerprint: fingerprint, allowPruneWithoutFingerprint };
+        const outcome = await applyPlan(client, manifest, applyOptions, (step) => {
             if (!options.json) stdout.write(`${renderStep(step)}\n`);
         });
         if (options.json) printJson({ ok: outcome.ok, changed: true, steps: outcome.steps });
@@ -447,7 +578,7 @@ program.command('validate')
     });
 
 program.parseAsync(process.argv).catch((error: unknown) => {
-    if (error instanceof ManifestError || error instanceof NotLoggedInError) process.stderr.write(`${red('Error:')} ${error.message}\n`);
+    if (error instanceof ManifestError || error instanceof NotLoggedInError || error instanceof PlanChangedError) process.stderr.write(`${red('Error:')} ${error.message}\n`);
     else if (error instanceof ApiError) process.stderr.write(`${red('Error:')} ${describeError(error)}\n`);
     else process.stderr.write(`${red('Error:')} ${(error as Error)?.message || String(error)}\n`);
     process.exitCode = 1;

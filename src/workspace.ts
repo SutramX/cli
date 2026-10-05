@@ -31,6 +31,20 @@ export interface MonitorPlanResponse {
     summary: Record<MonitorAction, number>;
     /** Plan-limit problems apply would hit (older APIs omit it). */
     warnings?: string[];
+    /**
+     * Identifies exactly this plan. Sent back as expected_fingerprint, apply
+     * refuses (409 PLAN_CHANGED) if the workspace changed since. Older APIs
+     * omit it.
+     */
+    plan_fingerprint?: string;
+}
+
+/** The workspace changed between plan and apply; nothing was applied. */
+export class PlanChangedError extends Error {
+    constructor() {
+        super('The workspace changed since the plan was shown, so nothing was applied. Run `sutramx apply` again to review the new plan.');
+        this.name = 'PlanChangedError';
+    }
 }
 
 export interface MonitorApplyResult extends MonitorChange {
@@ -60,12 +74,26 @@ interface RemoteMonitor {
     name: string;
 }
 
+/**
+ * Deleting is never implied by the file: prune and prune_integrations take
+ * effect only with --prune / --prune-integrations on the command line (a
+ * settings value alone just produces a warning). adopt_by_name may come from
+ * the file.
+ */
 export function effectiveOptions(manifest: Manifest, flags: PlanOptions): Required<PlanOptions> {
     return {
-        prune: flags.prune ?? manifest.settings?.prune ?? false,
+        prune: flags.prune === true,
         adoptByName: flags.adoptByName ?? manifest.settings?.adopt_by_name ?? false,
-        pruneIntegrations: flags.pruneIntegrations ?? manifest.settings?.prune_integrations ?? false,
+        pruneIntegrations: flags.pruneIntegrations === true,
     };
+}
+
+/** Warnings for delete settings in the file that need a command-line flag. */
+export function pruneSettingWarnings(manifest: Manifest, flags: PlanOptions): string[] {
+    const warnings: string[] = [];
+    if (manifest.settings?.prune && flags.prune === undefined) warnings.push('settings.prune is set in the file, but monitors are only deleted with --prune on the command line');
+    if (manifest.settings?.prune_integrations && !flags.pruneIntegrations) warnings.push('settings.prune_integrations is set in the file, but integrations are only deleted with --prune-integrations on the command line');
+    return warnings;
 }
 
 async function loadStatusPages(api: SutramXApi, manifest: Manifest): Promise<RemoteStatusPage[]> {
@@ -155,10 +183,18 @@ function errorText(error: unknown): string {
     return error instanceof ApiError ? `${error.message}${error.code ? ` (${error.code})` : ''}` : (error as Error).message;
 }
 
+export interface ApplyOptions extends Required<PlanOptions> {
+    continueOnError?: boolean;
+    /** plan_fingerprint of the plan the user approved. */
+    expectedFingerprint?: string;
+    /** Only for APIs without plan fingerprints, after an explicit --force-prune-without-plan-check. */
+    allowPruneWithoutFingerprint?: boolean;
+}
+
 export async function applyPlan(
     api: SutramXApi,
     manifest: Manifest,
-    options: Required<PlanOptions> & { continueOnError?: boolean; },
+    options: ApplyOptions,
     onStep: (step: StepResult) => void = () => undefined
 ): Promise<ApplyOutcome> {
     const steps: StepResult[] = [];
@@ -175,8 +211,11 @@ export async function applyPlan(
             prune: options.prune,
             adopt_by_name: options.adoptByName,
             continue_on_error: options.continueOnError === true,
+            ...(options.expectedFingerprint ? { expected_fingerprint: options.expectedFingerprint } : {}),
+            ...(options.allowPruneWithoutFingerprint ? { allow_prune_without_fingerprint: true } : {}),
         });
     } catch (error) {
+        if (error instanceof ApiError && error.status === 409 && error.code === 'PLAN_CHANGED') throw new PlanChangedError();
         record({ kind: 'monitor', action: 'apply', label: 'monitors', status: 'failed', error: errorText(error) });
         return { ok: false, steps };
     }

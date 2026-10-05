@@ -22,7 +22,7 @@ inputs:
     required: false
     default: https://api.sutramx.com
   prune:
-    description: "true deletes keyed monitors that are not in the file; empty uses settings.prune"
+    description: "true passes --prune: apply deletes keyed monitors that are not in the file (settings.prune alone deletes nothing)"
     required: false
     default: ""
   cli-version:

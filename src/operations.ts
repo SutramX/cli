@@ -168,3 +168,238 @@ export function renderMaintenanceTable(list: MaintenanceWindow[]): string {
         window.recurrence?.type && window.recurrence.type !== 'none' ? window.recurrence.type : '', maintenanceScope(window),
     ]), ['ID', 'TITLE', 'STATUS', 'STARTS', 'ENDS', 'REPEATS', 'SCOPE']);
 }
+
+// ─── Monitors ────────────────────────────────────────────────────────────────
+
+export const MONITOR_STATUSES = ['up', 'down', 'degraded', 'paused', 'pending', 'maintenance'] as const;
+export const CHECK_STATUSES = ['up', 'down', 'degraded', 'problem'] as const;
+const REGION_CODE = /^[a-z0-9][a-z0-9-]{0,19}$/;
+
+export function requireRegionCode(value: string, flag = '--region'): string {
+    if (!REGION_CODE.test(value)) throw new Error(`${flag}: lower-case region code, e.g. fra1 (see \`sutramx regions\`)`);
+    return value;
+}
+
+export function requireMonitorId(value: string): string {
+    if (!UUID.test(value)) throw new Error('Expected a monitor id (UUID).');
+    return value;
+}
+
+function pct(value: unknown): string {
+    return typeof value === 'number' ? `${value.toFixed(3).replace(/\.?0+$/, '')}%` : 'n/a';
+}
+
+export function renderMonitor(monitor: Record<string, any>): string {
+    const regions = (monitor.effective_regions || monitor.probe_regions || []) as string[];
+    const lines = [
+        `monitor     ${clean(monitor.name)}`,
+        `id          ${clean(monitor.id)}${monitor.external_id ? ` (key ${clean(monitor.external_id)})` : ''}`,
+        `type        ${clean(monitor.type)}${monitor.url ? ` · ${clean(monitor.url)}` : ''}`,
+        `status      ${clean(monitor.current_status ?? (monitor.is_active ? 'active' : 'paused'))}${monitor.open_incident ? ` · open incident ${clean(monitor.open_incident.id)} since ${time(monitor.open_incident.started_at)}` : ''}`,
+        `interval    ${clean(monitor.interval_seconds)}s · regions ${regions.length ? regions.map(clean).join(', ') : 'plan default'}`,
+        `uptime      24h ${pct(monitor.uptime_24h)} · 30d ${pct(monitor.uptime_30d)}`,
+        `last check  ${monitor.last_checked_at ? time(monitor.last_checked_at) : 'never'}${monitor.last_status ? ` (${clean(monitor.last_status)}${monitor.last_response_time_ms != null ? `, ${clean(monitor.last_response_time_ms)} ms` : ''})` : ''}`,
+    ];
+    if (monitor.last_error) lines.push(`last error  ${clean(String(monitor.last_error)).replace(/\s+/g, ' ').slice(0, 300)}`);
+    if (Array.isArray(monitor.tags) && monitor.tags.length) lines.push(`tags        ${monitor.tags.map(clean).join(', ')}`);
+    if (monitor.heartbeat_url) lines.push(`heartbeat   ${clean(monitor.heartbeat_url)}`);
+    return lines.join('\n');
+}
+
+export interface MonitorUpdate {
+    name?: string;
+    url?: string;
+    interval_seconds?: number;
+    tags?: string[];
+    config?: Record<string, unknown>;
+    regions?: string[];
+}
+
+/** PUT /monitors/:id with the changed fields, then PUT /monitors/:id/regions. */
+export async function updateMonitor(api: SutramXApi, id: string, update: MonitorUpdate): Promise<Record<string, any>> {
+    requireMonitorId(id);
+    const { regions, ...fields } = update;
+    const changes = Object.fromEntries(Object.entries(fields).filter(([, value]) => value !== undefined));
+    if (!Object.keys(changes).length && !regions?.length) throw new Error('Nothing to change: pass at least one of --name, --url, --interval, --tag, --config, --region.');
+    if (changes.name !== undefined && (typeof changes.name !== 'string' || !changes.name.trim() || changes.name.length > 255)) throw new Error('--name: 1-255 characters');
+    if (changes.config !== undefined && (!changes.config || typeof changes.config !== 'object' || Array.isArray(changes.config))) throw new Error('--config must be a JSON object');
+    regions?.forEach((code) => requireRegionCode(code));
+    let monitor: Record<string, any> | undefined;
+    if (Object.keys(changes).length) monitor = await api.put<Record<string, any>>(`/monitors/${id}`, changes);
+    if (regions?.length) {
+        await api.put(`/monitors/${id}/regions`, { regions });
+        monitor = await api.get<Record<string, any>>(`/monitors/${id}`);
+    }
+    return monitor!;
+}
+
+export interface CheckRow {
+    id?: string;
+    checked_at: string;
+    region?: string | null;
+    status: string;
+    response_time_ms?: number | null;
+    status_code?: number | null;
+    error_type?: string | null;
+    error_message?: string | null;
+}
+
+export interface CheckPage {
+    items: CheckRow[];
+    next_before?: string | null;
+}
+
+export async function listChecks(api: SutramXApi, id: string, options: { limit?: number; before?: string; region?: string; status?: string; } = {}): Promise<CheckPage> {
+    requireMonitorId(id);
+    if (options.before && !ISO_TIME.test(options.before)) throw new Error('--before must be an ISO-8601 date or time');
+    if (options.region) requireRegionCode(options.region);
+    if (options.status && !(CHECK_STATUSES as readonly string[]).includes(options.status)) throw new Error(`--status must be one of ${CHECK_STATUSES.join(', ')}`);
+    return api.get<CheckPage>(`/monitors/${id}/checks`, { limit: options.limit, before: options.before, region: options.region, status: options.status });
+}
+
+export function renderChecks(page: CheckPage): string {
+    if (!page.items?.length) return 'No checks.';
+    const body = table(page.items.map((row) => [
+        time(row.checked_at), String(row.region ?? ''), row.status, row.response_time_ms == null ? '' : String(row.response_time_ms),
+        row.status_code == null ? '' : String(row.status_code), String(row.error_type || row.error_message || '').replace(/\s+/g, ' ').slice(0, 80),
+    ]), ['TIME', 'REGION', 'STATUS', 'MS', 'HTTP', 'ERROR']);
+    return page.next_before ? `${body}\n${dim(`Older: --before ${clean(page.next_before)}`)}` : body;
+}
+
+export interface RunCheckResult {
+    region: string;
+    status: string;
+    response_time_ms: number;
+    status_code?: number | null;
+    error_message?: string | null;
+}
+
+export async function runCheck(api: SutramXApi, id: string): Promise<RunCheckResult> {
+    return api.post<RunCheckResult>(`/monitors/${requireMonitorId(id)}/run-check`);
+}
+
+export function renderRunCheck(result: RunCheckResult): string {
+    const status = result.status === 'up' ? green(result.status) : result.status === 'down' ? red(result.status) : yellow(clean(result.status));
+    return `Check from ${clean(result.region)}: ${status} in ${clean(result.response_time_ms)} ms${result.status_code ? ` (HTTP ${clean(result.status_code)})` : ''}${result.error_message ? `\nerror: ${clean(result.error_message).replace(/\s+/g, ' ').slice(0, 300)}` : ''}`;
+}
+
+// ─── Status pages ────────────────────────────────────────────────────────────
+
+export interface StatusPageSummary {
+    id: string;
+    title: string;
+    slug: string;
+    is_public?: boolean;
+    custom_domain?: string | null;
+    monitor_count?: number;
+    monitors?: Array<{ id: string; name?: string; section?: string | null; }>;
+    [key: string]: unknown;
+}
+
+const SLUG = /^[a-z0-9-]{1,64}$/;
+
+export async function listStatusPages(api: SutramXApi): Promise<StatusPageSummary[]> {
+    return api.get<StatusPageSummary[]>('/status/pages/me');
+}
+
+/** One page by id, or by slug (looked up in the workspace's own pages). */
+export async function getStatusPage(api: SutramXApi, idOrSlug: string): Promise<StatusPageSummary> {
+    let id = idOrSlug;
+    if (!UUID.test(idOrSlug)) {
+        if (!SLUG.test(idOrSlug)) throw new Error('Expected a status page id (UUID) or slug.');
+        const page = (await listStatusPages(api)).find((item) => item.slug === idOrSlug);
+        if (!page) throw new Error(`No status page with slug ${idOrSlug} in this workspace; see \`sutramx status-pages list\`.`);
+        id = requireMonitorId(String(page.id));
+    }
+    return api.get<StatusPageSummary>(`/status/pages/${id}`);
+}
+
+export function renderStatusPages(pages: StatusPageSummary[]): string {
+    if (!pages.length) return 'No status pages.';
+    return table(pages.map((page) => [
+        page.id, page.slug, page.title, page.is_public ? 'public' : 'not public', String(page.monitor_count ?? page.monitors?.length ?? 0), page.custom_domain || '',
+    ]), ['ID', 'SLUG', 'TITLE', 'VISIBILITY', 'MONITORS', 'DOMAIN']);
+}
+
+export function renderStatusPage(page: StatusPageSummary): string {
+    const lines = [
+        `status page ${clean(page.title)}`,
+        `id          ${clean(page.id)}`,
+        `slug        ${clean(page.slug)} · ${page.is_public ? 'public' : 'not public'}${page.custom_domain ? ` · ${clean(page.custom_domain)}` : ''}`,
+    ];
+    const monitors = page.monitors || [];
+    lines.push(monitors.length ? 'monitors' : 'monitors    none');
+    for (const monitor of monitors) lines.push(`  - ${clean(monitor.name ?? monitor.id)} (${clean(monitor.id)})${monitor.section ? ` · ${clean(monitor.section)}` : ''}`);
+    return lines.join('\n');
+}
+
+// ─── Uptime report ───────────────────────────────────────────────────────────
+
+export const REPORT_DAYS = [7, 14, 30, 90] as const;
+
+interface HealthScore { monitor_id: string; monitor_name: string; uptime_percentage: number; incident_count: number; mttr_minutes: number; total_checks: number; score: number; }
+interface BurnRate { slo_id?: string; monitor_id: string; monitor_name: string; target_percentage: number; slow_window_minutes: number; fast_burn_rate: number; slow_burn_rate: number; is_alerting: boolean; error_budget?: { remaining_percentage: number; exhausted?: boolean; } | null; }
+
+export interface UptimeReport {
+    window_days: number;
+    overall_uptime_percentage: number | null;
+    incident_count: number;
+    monitors: Array<{ monitor_id: string; monitor_name: string; uptime_percentage: number; incident_count: number; mttr_minutes: number; total_checks: number; health_score: number; }>;
+    slos: BurnRate[];
+}
+
+/** Same endpoints and shape as the MCP server's sutramx_uptime_report. */
+export async function uptimeReport(api: SutramXApi, days: number, monitorId?: string): Promise<UptimeReport> {
+    if (!(REPORT_DAYS as readonly number[]).includes(days)) throw new Error(`--days must be one of ${REPORT_DAYS.join(', ')}`);
+    let scores: HealthScore[];
+    let slos: BurnRate[];
+    if (monitorId) {
+        const one = await api.get<{ healthScore?: HealthScore | null; burnRate?: BurnRate | null; }>(`/reliability/monitor/${requireMonitorId(monitorId)}`, { days });
+        scores = one.healthScore ? [one.healthScore] : [];
+        slos = one.burnRate ? [one.burnRate] : [];
+    } else {
+        const overview = await api.get<{ healthScores?: HealthScore[]; burnRates?: BurnRate[]; }>('/reliability/overview', { days });
+        scores = overview.healthScores || [];
+        slos = overview.burnRates || [];
+    }
+    const totalChecks = scores.reduce((sum, score) => sum + (score.total_checks || 0), 0);
+    return {
+        window_days: days,
+        overall_uptime_percentage: totalChecks > 0 ? Number((scores.reduce((sum, score) => sum + score.uptime_percentage * (score.total_checks || 0), 0) / totalChecks).toFixed(3)) : null,
+        incident_count: scores.reduce((sum, score) => sum + (score.incident_count || 0), 0),
+        monitors: scores.map((score) => ({
+            monitor_id: score.monitor_id, monitor_name: score.monitor_name, uptime_percentage: score.uptime_percentage, incident_count: score.incident_count,
+            mttr_minutes: score.mttr_minutes, total_checks: score.total_checks, health_score: score.score,
+        })),
+        slos,
+    };
+}
+
+export function renderUptimeReport(report: UptimeReport): string {
+    if (!report.monitors.length) return `No monitors with data in the last ${report.window_days} days.`;
+    const lines = [
+        `Uptime, last ${report.window_days} days: ${pct(report.overall_uptime_percentage)} · ${report.incident_count} incidents`,
+        '',
+        table(report.monitors.map((row) => [
+            row.monitor_name, pct(row.uptime_percentage), String(row.incident_count), row.incident_count ? `${Math.round(row.mttr_minutes)}m` : '', String(row.total_checks), String(row.health_score),
+        ]), ['MONITOR', 'UPTIME', 'INCIDENTS', 'MTTR', 'CHECKS', 'HEALTH']),
+    ];
+    if (report.slos.length) {
+        lines.push('', table(report.slos.map((slo) => [
+            slo.monitor_name, pct(slo.target_percentage), slo.error_budget ? `${slo.error_budget.remaining_percentage}%` : 'n/a',
+            `${slo.fast_burn_rate}x / ${slo.slow_burn_rate}x`, slo.is_alerting ? 'burning fast' : slo.error_budget?.exhausted ? 'exhausted' : 'ok',
+        ]), ['SLO MONITOR', 'TARGET', 'BUDGET LEFT', 'BURN (FAST/SLOW)', 'STATE']));
+    }
+    return lines.join('\n');
+}
+
+// ─── Incident notes ──────────────────────────────────────────────────────────
+
+export async function addIncidentNote(api: SutramXApi, id: string, body: string, isPublic: boolean): Promise<Record<string, unknown>> {
+    requireIncidentId(id);
+    const text = body.trim();
+    if (!text) throw new Error('The note is empty.');
+    if (text.length > 5000) throw new Error('The note is longer than 5000 characters.');
+    const result = await api.post<{ note?: Record<string, unknown>; }>(`/incidents/${id}/notes`, { body: text, public: isPublic });
+    return (result?.note ?? result) as Record<string, unknown>;
+}

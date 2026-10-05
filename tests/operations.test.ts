@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import { afterEach, beforeEach, test } from 'node:test';
 import { ApiError, SutramXApi } from '../src/api.js';
 import {
-    acknowledgeIncident, getIncident, listIncidents, listMaintenance, renderIncident, renderIncidentTable,
-    renderMaintenanceTable, resolveIncident,
+    acknowledgeIncident, addIncidentNote, getIncident, getStatusPage, listChecks, listIncidents, listMaintenance, renderChecks, renderIncident,
+    renderIncidentTable, renderMaintenanceTable, renderMonitor, renderUptimeReport, resolveIncident, runCheck, updateMonitor, uptimeReport,
 } from '../src/operations.js';
 
 const INCIDENT_ID = '33333333-3333-4333-8333-333333333333';
@@ -128,4 +128,72 @@ test('maintenance list reads /maintenance, filters by effective status and rende
     assert.deepEqual(ongoing.map((window) => window.id), ['a']);
     await assert.rejects(listMaintenance(client(), 'active'), /--status/);
     assert.equal(renderMaintenanceTable([]), 'No maintenance windows.');
+});
+
+test('monitors update sends only the changed fields, then the regions', async () => {
+    respond = (call) => ({ status: 200, body: call.method === 'PUT' && call.url.pathname.endsWith('/regions') ? { ok: true } : { id: MONITOR_ID, name: 'New name' } });
+    const monitor = await updateMonitor(client(), MONITOR_ID, { name: 'New name', interval_seconds: undefined, regions: ['fra1'] });
+    assert.equal(monitor.name, 'New name');
+    assert.deepEqual(calls.map((call) => `${call.method} ${call.url.pathname}`), [`PUT /monitors/${MONITOR_ID}`, `PUT /monitors/${MONITOR_ID}/regions`, `GET /monitors/${MONITOR_ID}`]);
+    assert.deepEqual(calls[0].body, { name: 'New name' });
+    assert.deepEqual(calls[1].body, { regions: ['fra1'] });
+    await assert.rejects(updateMonitor(client(), MONITOR_ID, {}), /Nothing to change/);
+    await assert.rejects(updateMonitor(client(), MONITOR_ID, { regions: ['FRA 1'] }), /region code/);
+    await assert.rejects(updateMonitor(client(), '../admin', { name: 'x' }), /UUID/);
+});
+
+test('monitors checks and run-check use the monitor endpoints and validate filters', async () => {
+    respond = (call) => ({ status: 200, body: call.method === 'POST'
+        ? { region: 'fra1', status: 'down', response_time_ms: 120, status_code: 503, error_message: 'Bad\u001b[2J gateway' }
+        : { items: [{ checked_at: '2026-10-01T10:00:00Z', region: 'fra1', status: 'down', response_time_ms: 120, status_code: 503, error_message: 'boom' }], next_before: '2026-10-01T09:00:00Z' } });
+    const page = await listChecks(client(), MONITOR_ID, { limit: 10, status: 'problem', region: 'fra1' });
+    assert.equal(calls[0].url.pathname, `/monitors/${MONITOR_ID}/checks`);
+    assert.equal(calls[0].url.searchParams.get('status'), 'problem');
+    assert.equal(calls[0].url.searchParams.get('limit'), '10');
+    assert.match(renderChecks(page), /--before 2026-10-01T09:00:00Z/);
+    await assert.rejects(listChecks(client(), MONITOR_ID, { before: '2026-01-01&x=1' }), /ISO-8601/);
+    await assert.rejects(listChecks(client(), MONITOR_ID, { status: 'bogus' }), /--status/);
+    const result = await runCheck(client(), MONITOR_ID);
+    assert.equal(calls.at(-1)!.method, 'POST');
+    assert.equal(calls.at(-1)!.url.pathname, `/monitors/${MONITOR_ID}/run-check`);
+    assert.equal(result.status_code, 503);
+});
+
+test('monitors get renders a readable summary without control characters', () => {
+    const text = renderMonitor({ id: MONITOR_ID, name: 'Checkout\u001b[2J', type: 'http', url: 'https://example.com', current_status: 'up', interval_seconds: 60, uptime_24h: 99.5, tags: ['prod'] });
+    assert.match(text, /monitor {5}Checkout\[2J/);
+    assert.match(text, /24h 99\.5%/);
+    assert.doesNotMatch(text, /\u001b/);
+});
+
+test('status-pages get resolves a slug through the workspace list', async () => {
+    const PAGE_ID = '55555555-5555-4555-8555-555555555555';
+    respond = (call) => ({ status: 200, body: call.url.pathname === '/status/pages/me' ? [{ id: PAGE_ID, slug: 'acme', title: 'Acme' }] : { id: PAGE_ID, slug: 'acme', title: 'Acme', monitors: [] } });
+    const page = await getStatusPage(client(), 'acme');
+    assert.equal(page.id, PAGE_ID);
+    assert.equal(calls.at(-1)!.url.pathname, `/status/pages/${PAGE_ID}`);
+    await assert.rejects(getStatusPage(client(), 'missing'), /No status page/);
+    await assert.rejects(getStatusPage(client(), '../x'), /id \(UUID\) or slug/);
+});
+
+test('uptime report uses the reliability endpoints and weights uptime by checks', async () => {
+    respond = () => ({ status: 200, body: { healthScores: [
+        { monitor_id: MONITOR_ID, monitor_name: 'A', uptime_percentage: 100, incident_count: 0, mttr_minutes: 0, total_checks: 300, score: 100 },
+        { monitor_id: '22222222-2222-4222-8222-222222222222', monitor_name: 'B', uptime_percentage: 90, incident_count: 2, mttr_minutes: 12, total_checks: 100, score: 70 },
+    ], burnRates: [] } });
+    const report = await uptimeReport(client(), 7);
+    assert.equal(calls[0].url.pathname, '/reliability/overview');
+    assert.equal(calls[0].url.searchParams.get('days'), '7');
+    assert.equal(report.overall_uptime_percentage, 97.5);
+    assert.equal(report.incident_count, 2);
+    assert.match(renderUptimeReport(report), /97\.5%/);
+    await assert.rejects(uptimeReport(client(), 5), /--days/);
+});
+
+test('incident notes are internal by default and validated', async () => {
+    respond = (call) => ({ status: 201, body: { note: { id: 'n1', ...(call.body as object) } } });
+    await addIncidentNote(client(), INCIDENT_ID, '  Investigating  ', false);
+    assert.deepEqual(calls[0].body, { body: 'Investigating', public: false });
+    await assert.rejects(addIncidentNote(client(), INCIDENT_ID, '   ', false), /empty/);
+    await assert.rejects(addIncidentNote(client(), 'nope', 'x', false), /UUID/);
 });

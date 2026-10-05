@@ -20,8 +20,10 @@ function help(...args: string[]): string {
 
 const COMMANDS = [
     [], ['login'], ['logout'], ['whoami'],
-    ['monitors'], ['monitors', 'list'], ['monitors', 'get'], ['monitors', 'create'], ['monitors', 'delete'], ['monitors', 'pause'], ['monitors', 'resume'], ['monitors', 'adopt'],
-    ['incidents'], ['incidents', 'list'], ['incidents', 'get'], ['incidents', 'ack'], ['incidents', 'resolve'],
+    ['monitors'], ['monitors', 'list'], ['monitors', 'get'], ['monitors', 'create'], ['monitors', 'update'], ['monitors', 'delete'], ['monitors', 'pause'], ['monitors', 'resume'],
+    ['monitors', 'checks'], ['monitors', 'run-check'], ['monitors', 'adopt'],
+    ['incidents'], ['incidents', 'list'], ['incidents', 'get'], ['incidents', 'ack'], ['incidents', 'resolve'], ['incidents', 'note'],
+    ['status-pages'], ['status-pages', 'list'], ['status-pages', 'get'], ['uptime'],
     ['maintenance'], ['maintenance', 'list'],
     ['regions'], ['init'], ['validate'], ['plan'], ['diff'], ['apply'],
 ];
