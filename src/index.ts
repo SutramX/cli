@@ -6,7 +6,8 @@ import { Command, InvalidArgumentError, Option } from 'commander';
 import { ApiError, describeError, SutramXApi } from './api.js';
 import { apiFromEnvironment, credentialsPath, NotLoggedInError, removeCredentials, resolveAuth, writeCredentials } from './config.js';
 import { exportMonitors, SAMPLE_MANIFEST } from './exportManifest.js';
-import { loadManifest, ManifestError } from './manifest.js';
+import { readSecret as readSecretFrom } from './prompt.js';
+import { loadManifest, Manifest, ManifestError } from './manifest.js';
 import {
     acknowledgeIncident, addIncidentNote, CHECK_STATUSES, getIncident, getStatusPage, INCIDENT_STATUSES, listChecks, listIncidents, listMaintenance,
     listStatusPages, MAINTENANCE_STATUSES, MONITOR_STATUSES, renderChecks, renderIncident, renderIncidentTable, renderMaintenanceTable, renderMonitor,
@@ -38,36 +39,8 @@ function printJson(value: unknown) {
     stdout.write(`${JSON.stringify(value, null, 2)}\n`);
 }
 
-async function readSecret(prompt: string): Promise<string> {
-    if (!stdin.isTTY) {
-        const chunks: Buffer[] = [];
-        for await (const chunk of stdin) chunks.push(chunk as Buffer);
-        return Buffer.concat(chunks).toString('utf8').trim();
-    }
-    stdout.write(prompt);
-    return new Promise((resolve, reject) => {
-        let value = '';
-        stdin.setRawMode(true);
-        stdin.resume();
-        stdin.setEncoding('utf8');
-        const onData = (char: string) => {
-            if (char === '\r' || char === '\n' || char === '\u0004') {
-                stdin.setRawMode(false);
-                stdin.pause();
-                stdin.off('data', onData);
-                stdout.write('\n');
-                resolve(value.trim());
-            } else if (char === '\u0003') {
-                stdin.setRawMode(false);
-                reject(new Error('Cancelled'));
-            } else if (char === '\u007f' || char === '\b') {
-                value = value.slice(0, -1);
-            } else {
-                value += char;
-            }
-        };
-        stdin.on('data', onData);
-    });
+function readSecret(prompt: string): Promise<string> {
+    return readSecretFrom(prompt, stdin, stdout);
 }
 
 async function confirm(question: string): Promise<boolean> {
