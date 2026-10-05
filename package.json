@@ -45,7 +45,8 @@
     "dev": "tsx src/index.ts",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test tests/*.test.ts",
-    "prepublishOnly": "npm run build"
+    "check-version": "node scripts/check-version.mjs",
+    "prepublishOnly": "npm run check-version && npm run build"
   },
   "dependencies": {
     "commander": "^14.0.0",

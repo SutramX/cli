@@ -29,6 +29,8 @@ jobs:
       - run: npm ci
       - name: Audit production dependencies
         run: npm audit --omit=dev --audit-level=high
+      - name: Versions agree (package.json, src/version.ts)
+        run: npm run check-version
       - run: npm run typecheck
       - run: npm test
       - run: npm run build

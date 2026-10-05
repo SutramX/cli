@@ -32,19 +32,9 @@ jobs:
           registry-url: https://registry.npmjs.org
           cache: npm
       - name: Tag must match package.json and src/version.ts
+        run: node scripts/check-version.mjs "$TAG"
         env:
           TAG: ${{ github.ref_name }}
-        run: |
-          node -e '
-            const fs = require("fs");
-            const tag = process.env.TAG.replace(/^v/, "");
-            const pkg = JSON.parse(fs.readFileSync("package.json", "utf8")).version;
-            const src = /VERSION = .([^"\x27]+)./.exec(fs.readFileSync("src/version.ts", "utf8"))?.[1];
-            if (tag !== pkg || tag !== src) {
-              console.error(`::error::tag ${process.env.TAG} != package.json ${pkg} / src/version.ts ${src}`);
-              process.exit(1);
-            }
-          '
       - run: npm ci
       - name: Audit production dependencies
         run: npm audit --omit=dev --audit-level=high
