@@ -137,6 +137,16 @@ test('exportMonitors keeps masked credentials as-is and explains them', () => {
     assert.doesNotMatch(plain.yaml, /REDACTED/);
 });
 
+test('exportMonitors exports mcp monitors with their masked headers like http ones', () => {
+    const { yaml } = exportMonitors([
+        { id: 'm', external_id: null, name: 'Docs MCP', type: 'mcp', url: 'https://mcp.example.com/mcp', interval_seconds: 300, is_active: true, config: { headers: { Authorization: '[REDACTED]' }, expected_tools: ['search_docs'] } },
+    ]);
+    assert.match(yaml, /type: mcp/);
+    assert.match(yaml, /Authorization: "?\[REDACTED\]"?/);
+    assert.match(yaml, /# \[REDACTED\] marks a stored credential/);
+    assert.match(yaml, /- search_docs/);
+});
+
 test('exportMonitors skips browser checks (plan rejects them) and reports them', () => {
     const { yaml, exported, skipped } = exportMonitors([
         { id: '1', external_id: 'web', name: 'Web', type: 'http', url: 'https://example.com', interval_seconds: 60, is_active: true },

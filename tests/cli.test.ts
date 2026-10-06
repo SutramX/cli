@@ -9,7 +9,7 @@ import { monitorSpecs, parseManifest } from '../src/manifest.js';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const README = readFileSync(join(ROOT, 'README.md'), 'utf8');
-const MONITOR_TYPES = ['http', 'api', 'ping', 'port', 'udp', 'dns', 'multistep', 'cron'];
+const MONITOR_TYPES = ['http', 'api', 'ping', 'port', 'udp', 'dns', 'multistep', 'mcp', 'cron'];
 
 /** `sutramx <args> --help`, from source, with no saved credentials or API key. */
 function help(...args: string[]): string {
@@ -64,4 +64,26 @@ test('sutramx.yml accepts dns and multistep monitors (the API validates their co
         '        - { name: Login, method: POST, url: "https://api.example.com/login" }',
     ].join('\n'), {});
     assert.deepEqual(monitorSpecs(manifest).map((spec) => spec.type), ['dns', 'multistep']);
+});
+
+test('sutramx.yml accepts mcp monitors with url, headers from env and drift settings', () => {
+    const manifest = parseManifest([
+        'monitors:',
+        '  - key: docs-mcp',
+        '    name: Docs MCP',
+        '    type: mcp',
+        '    url: https://mcp.example.com/mcp',
+        '    config:',
+        '      headers: { Authorization: "Bearer ${MCP_TOKEN}" }',
+        '      expected_tools: [search_docs]',
+        '      drift_mode: alert_on_change',
+        '      drift_scope: names',
+        '      drift_severity: down',
+    ].join('\n'), { MCP_TOKEN: 'abc' });
+    const [spec] = monitorSpecs(manifest);
+    assert.equal(spec.type, 'mcp');
+    assert.equal(spec.url, 'https://mcp.example.com/mcp');
+    assert.deepEqual(spec.config, {
+        headers: { Authorization: 'Bearer abc' }, expected_tools: ['search_docs'], drift_mode: 'alert_on_change', drift_scope: 'names', drift_severity: 'down',
+    });
 });
