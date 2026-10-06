@@ -107,12 +107,53 @@ export class ManifestError extends Error {
  */
 const FORBIDDEN_ENV = /^(SUTRAMX_API_KEY|SUTRAMX_CONFIG|GITHUB_TOKEN|GH_TOKEN|ACTIONS_.*|INPUT_.*|NPM_TOKEN|NODE_AUTH_TOKEN|AWS_SECRET_ACCESS_KEY|AWS_SESSION_TOKEN|CI_JOB_TOKEN|CI_JOB_JWT.*|SYSTEM_ACCESSTOKEN)$/;
 
-/** SUTRAMX_ALLOWED_ENV="A,B,PREFIX_*": only these variables may be referenced (unset: any not forbidden). */
+/** CI runs (CI or GITHUB_ACTIONS set, and not "false"/"0"): a pull request may have written sutramx.yml. */
+export function isCi(env: NodeJS.ProcessEnv): boolean {
+    const flag = (value: string | undefined) => Boolean(value) && !/^(false|0)$/i.test(String(value).trim());
+    return flag(env.CI) || flag(env.GITHUB_ACTIONS);
+}
+
+function allowList(env: NodeJS.ProcessEnv): string[] {
+    return (env.SUTRAMX_ALLOWED_ENV || '').split(',').map((item) => item.trim()).filter(Boolean);
+}
+
+/**
+ * Which variables ${VAR} may read. Never the FORBIDDEN_ENV credentials.
+ * SUTRAMX_ALLOWED_ENV="A,B,PREFIX_*" limits it to the listed names/prefixes.
+ * Unset: any variable locally, but NONE in CI — there the file may come from
+ * a pull request, and every runner variable (other CI secrets included) would
+ * otherwise be one `${NAME}` away from a plan comment.
+ */
 export function envAllowed(name: string, env: NodeJS.ProcessEnv): boolean {
     if (FORBIDDEN_ENV.test(name)) return false;
-    const list = (env.SUTRAMX_ALLOWED_ENV || '').split(',').map((item) => item.trim()).filter(Boolean);
-    if (!list.length) return true;
+    const list = allowList(env);
+    if (!list.length) return !isCi(env);
     return list.some((pattern) => (pattern.endsWith('*') ? name.startsWith(pattern.slice(0, -1)) : name === pattern));
+}
+
+/**
+ * Values read from the environment by ${VAR} (value -> variable name). Output
+ * shows them as `${NAME}`, never the value: see redactExpandedEnv().
+ */
+const expandedEnv = new Map<string, string>();
+/** Shorter values are not redacted: they would mangle ordinary output. */
+const MIN_REDACTED_LENGTH = 4;
+
+/** Replace every value a ${VAR} expanded to with `${VAR}` (errors, plan/diff, JSON output). */
+export function redactExpandedEnv(text: string): string {
+    if (!expandedEnv.size || !text) return text;
+    let out = text;
+    for (const [value, name] of [...expandedEnv].sort((a, b) => b[0].length - a[0].length)) {
+        for (const form of new Set([value, JSON.stringify(value).slice(1, -1)])) {
+            if (out.includes(form)) out = out.split(form).join(`\${${name}}`);
+        }
+    }
+    return out;
+}
+
+/** Test hook. */
+export function resetExpandedEnvForTests(): void {
+    expandedEnv.clear();
 }
 
 export function interpolateEnv(value: unknown, env: NodeJS.ProcessEnv, path = '', missing: string[] = [], denied: string[] = []): unknown {
@@ -124,7 +165,10 @@ export function interpolateEnv(value: unknown, env: NodeJS.ProcessEnv, path = ''
                 return '';
             }
             const resolved = env[name];
-            if (resolved !== undefined && resolved !== '') return resolved;
+            if (resolved !== undefined && resolved !== '') {
+                if (resolved.length >= MIN_REDACTED_LENGTH) expandedEnv.set(resolved, name);
+                return resolved;
+            }
             if (fallback !== undefined) return fallback;
             missing.push(`${name} (at ${path || 'root'})`);
             return '';
@@ -153,17 +197,22 @@ export function parseManifest(source: string, env: NodeJS.ProcessEnv = process.e
     const missing: string[] = [];
     const denied: string[] = [];
     const expanded = interpolateEnv(raw, env, '', missing, denied);
-    if (denied.length) throw new ManifestError('sutramx.yml references environment variables it may not read (credentials, or not in SUTRAMX_ALLOWED_ENV):', denied);
+    if (denied.length) {
+        const why = !allowList(env).length && isCi(env)
+            ? 'in CI only variables listed in SUTRAMX_ALLOWED_ENV (the GitHub Action\'s allowed-env input) can be read, e.g. SUTRAMX_ALLOWED_ENV="SLACK_WEBHOOK_URL,STAGING_*"'
+            : 'credentials, or not in SUTRAMX_ALLOWED_ENV';
+        throw new ManifestError(`sutramx.yml references environment variables it may not read (${why}):`, denied);
+    }
     if (missing.length) throw new ManifestError('Environment variables referenced in sutramx.yml are not set:', missing);
     const parsed = ManifestSchema.safeParse(expanded);
-    if (!parsed.success) throw new ManifestError('sutramx.yml is invalid:', issuesOf(parsed.error));
+    if (!parsed.success) throw new ManifestError('sutramx.yml is invalid:', issuesOf(parsed.error).map(redactExpandedEnv));
 
     const manifest = parsed.data;
     const problems: string[] = [];
     const duplicates = (values: string[], label: string) => {
         const seen = new Set<string>();
         for (const value of values) {
-            if (seen.has(value)) problems.push(`duplicate ${label}: ${value}`);
+            if (seen.has(value)) problems.push(redactExpandedEnv(`duplicate ${label}: ${value}`));
             seen.add(value);
         }
     };

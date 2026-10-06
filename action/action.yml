@@ -25,6 +25,14 @@ inputs:
     description: "true passes --prune: apply deletes keyed monitors that are not in the file (settings.prune alone deletes nothing)"
     required: false
     default: ""
+  allowed-env:
+    description: >-
+      Comma-separated environment variables sutramx.yml may read with ${VAR} (names, or prefixes ending in *,
+      e.g. "STAGING_URL,SLACK_*"). Sets SUTRAMX_ALLOWED_ENV. In CI, with neither this nor SUTRAMX_ALLOWED_ENV set,
+      ${VAR} can read nothing, so a pull request cannot pull other CI secrets into the plan. Expanded values are
+      printed as ${VAR}, never the value.
+    required: false
+    default: ""
   cli-version:
     description: Version of @sutramx/cli to run. Defaults to the release this action ships with; "latest" (opt-in) follows every npm release
     required: false
@@ -56,6 +64,7 @@ runs:
         INPUT_FILE: ${{ inputs.file }}
         INPUT_PRUNE: ${{ inputs.prune }}
         INPUT_CLI_VERSION: ${{ inputs.cli-version }}
+        INPUT_ALLOWED_ENV: ${{ inputs.allowed-env }}
         NO_COLOR: "1"
       run: |
         set -uo pipefail
@@ -66,6 +75,8 @@ runs:
           echo "cli-version must be latest, next or a version like 0.1.0" >&2; exit 1
         fi
         case "$INPUT_COMMAND" in plan|diff|apply) ;; *) echo "command must be plan, diff or apply" >&2; exit 1 ;; esac
+        # The allowlist comes from the workflow (trusted), not from sutramx.yml.
+        if [ -n "$INPUT_ALLOWED_ENV" ]; then export SUTRAMX_ALLOWED_ENV="$INPUT_ALLOWED_ENV"; fi
         args=("$INPUT_COMMAND" --file "$INPUT_FILE")
         if [ "$INPUT_PRUNE" = "true" ]; then args+=(--prune); elif [ "$INPUT_PRUNE" = "false" ]; then args+=(--no-prune); fi
         if [ "$INPUT_COMMAND" = "apply" ]; then args+=(--auto-approve); else args+=(--detailed-exitcode); fi

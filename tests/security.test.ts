@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { isTrustedApiHost, SutramXApi, validateApiUrl } from '../src/api.js';
 import { readCredentials, writeCredentials } from '../src/config.js';
-import { ManifestError, parseManifest } from '../src/manifest.js';
+import { envAllowed, isCi, ManifestError, parseManifest, redactExpandedEnv } from '../src/manifest.js';
 import { createMonitorResolver, planIntegrations } from '../src/reconcile.js';
 import { clean } from '../src/render.js';
 
@@ -32,6 +32,30 @@ test('a sutramx.yml cannot read the API key or CI tokens; SUTRAMX_ALLOWED_ENV na
     assert.equal(parseManifest(ok, env).monitors[0].name, 'y');
     assert.throws(() => parseManifest(ok, { ...env, SUTRAMX_ALLOWED_ENV: 'SLACK_*' }), ManifestError);
     assert.equal(parseManifest(ok, { ...env, SUTRAMX_ALLOWED_ENV: 'SLACK_*,OTHER' }).monitors[0].name, 'y');
+});
+
+test('in CI (CI / GITHUB_ACTIONS) a sutramx.yml reads no variable unless SUTRAMX_ALLOWED_ENV lists it', () => {
+    const ok = 'monitors:\n  - key: a\n    name: "${OTHER}"\n';
+    for (const ci of [{ CI: 'true' }, { CI: '1' }, { GITHUB_ACTIONS: 'true' }]) {
+        assert.equal(isCi(ci), true);
+        assert.throws(() => parseManifest(ok, { ...ci, OTHER: 'value-y' }),
+            (error: unknown) => error instanceof ManifestError && /OTHER \(at monitors\[0\]\.name\)/.test(error.message) && /SUTRAMX_ALLOWED_ENV/.test(error.message) && !error.message.includes('value-y'));
+        assert.equal(parseManifest(ok, { ...ci, OTHER: 'value-y', SUTRAMX_ALLOWED_ENV: 'OTHER' }).monitors[0].name, 'value-y');
+        assert.equal(envAllowed('GITHUB_TOKEN', { ...ci, SUTRAMX_ALLOWED_ENV: '*' }), false);
+    }
+    for (const local of [{}, { CI: 'false' }, { CI: '0' }, { CI: '' }]) assert.equal(isCi(local), false);
+    assert.equal(parseManifest(ok, { CI: 'false', OTHER: 'value-y' }).monitors[0].name, 'value-y');
+    // A default is still only a default: the variable itself must be allowed.
+    assert.throws(() => parseManifest('monitors:\n  - key: a\n    name: "${OTHER:-x}"\n', { CI: 'true' }), ManifestError);
+});
+
+test('values read through ${VAR} are never echoed back in validation errors', () => {
+    const env = { MONITOR_TYPE: 'leaky-type-value', DUP: 'duplicate-key-value' };
+    assert.throws(() => parseManifest('version: "${MONITOR_TYPE}"\nmonitors:\n  - key: a\n    name: n\n', env),
+        (error: unknown) => error instanceof ManifestError && !error.message.includes('leaky-type-value'));
+    assert.throws(() => parseManifest('monitors:\n  - key: "${DUP}"\n    name: a\n  - key: "${DUP}"\n    name: b\n', env),
+        (error: unknown) => error instanceof ManifestError && /duplicate monitor key: \$\{DUP\}/.test(error.message) && !error.message.includes('duplicate-key-value'));
+    assert.equal(redactExpandedEnv('type leaky-type-value and "leaky-type-value"'), 'type ${MONITOR_TYPE} and "${MONITOR_TYPE}"');
 });
 
 test('YAML alias bombs are refused', () => {

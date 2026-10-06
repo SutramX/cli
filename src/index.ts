@@ -7,7 +7,7 @@ import { ApiError, describeError, SutramXApi } from './api.js';
 import { apiFromEnvironment, credentialsPath, NotLoggedInError, removeCredentials, resolveAuth, writeCredentials } from './config.js';
 import { exportMonitors, SAMPLE_MANIFEST } from './exportManifest.js';
 import { readSecret as readSecretFrom } from './prompt.js';
-import { loadManifest, Manifest, ManifestError } from './manifest.js';
+import { loadManifest, Manifest, ManifestError, redactExpandedEnv } from './manifest.js';
 import {
     acknowledgeIncident, addIncidentNote, CHECK_STATUSES, getIncident, getStatusPage, INCIDENT_STATUSES, listChecks, listIncidents, listMaintenance,
     listStatusPages, MAINTENANCE_STATUSES, MONITOR_STATUSES, renderChecks, renderIncident, renderIncidentTable, renderMaintenanceTable, renderMonitor,
@@ -16,6 +16,21 @@ import {
 import { bold, clean, cyan, dim, green, red, renderPlan, renderStep, table, yellow } from './render.js';
 import { VERSION } from './version.js';
 import { applyPlan, buildPlan, checkTarget, destructiveCounts, effectiveOptions, PlanChangedError, PlanOptions, pruneSettingWarnings, redactedPlan } from './workspace.js';
+
+/**
+ * Everything printed (plan, diff, --json, errors, API messages) shows a value
+ * read through ${VAR} in sutramx.yml as `${VAR}`, so CI logs, job summaries
+ * and plan comments never carry it.
+ */
+function redactOutput(stream: NodeJS.WriteStream): void {
+    const write = stream.write.bind(stream) as (...args: unknown[]) => boolean;
+    stream.write = ((chunk: unknown, ...rest: unknown[]) => write(
+        typeof chunk === 'string' ? redactExpandedEnv(chunk) : chunk instanceof Uint8Array ? redactExpandedEnv(Buffer.from(chunk).toString('utf8')) : chunk,
+        ...rest,
+    )) as typeof stream.write;
+}
+redactOutput(process.stdout);
+redactOutput(process.stderr);
 
 /** Exit codes: 0 ok / no changes, 1 error, 2 changes present (plan --detailed-exitcode). */
 

@@ -114,7 +114,7 @@ How it reconciles:
 - **Monitors** are matched by `key` and planned by the SutramX API with the same rules as the dashboard (plan limits, minimum interval, allowed locations, URL safety). A field you leave out is not managed: an existing monitor keeps its value. `config`, when present, is managed as a whole. Changing `type` shows as a **replace** (delete, then create: the old monitor's history goes); `apply` refuses it unless you pass `--allow-replace` (or `--prune`). Monitors without a key (made in the dashboard) are never changed unless you adopt them.
 - **Status pages** are created or updated; monitors are listed in order with optional sections. Delete pages in the dashboard.
 - **Integrations** are created or updated (secrets are stored encrypted and only read back masked, so a secret counts as changed when its visible tail differs). With `--prune-integrations`, connections of the declared types that are not in the file are deleted. Names are compared as SutramX stores them (trimmed, runs of spaces collapsed). Routing to a monitor key that is neither in the file nor in the workspace is an error, not silently dropped.
-- `${VAR}` and `${VAR:-default}` read environment variables; a missing variable is an error. `$${VAR}` is a literal.
+- `${VAR}` and `${VAR:-default}` read environment variables; a missing variable is an error. `$${VAR}` is a literal. In CI (`CI` or `GITHUB_ACTIONS` set) only variables listed in `SUTRAMX_ALLOWED_ENV` can be read (see [Security guardrails](#security-guardrails)). Output (plan, diff, `--json`, errors) shows an expanded value as `${VAR}`, never the value.
 
 Apply order: monitors first, then integrations and status pages, so new monitors can be referenced by key in the same run. Apply stops at the first failure (completed changes are kept) unless `--continue-on-error`. `plan` warns when the plan's monitor allowance or minimum interval would make apply fail, and apply refuses to start when the file changes integrations but the key lacks Automation access.
 
@@ -135,6 +135,19 @@ sutramx apply
   with:
     command: apply        # plan | diff | apply
     api-key: ${{ secrets.SUTRAMX_API_KEY }}
+```
+
+If `sutramx.yml` uses `${VAR}`, list those variables in `allowed-env` (or set `SUTRAMX_ALLOWED_ENV` in the workflow): in CI nothing else can be read.
+
+```yaml
+- uses: sutramx/cli/action@v1
+  with:
+    command: plan
+    api-key: ${{ secrets.SUTRAMX_API_KEY }}
+    allowed-env: STAGING_URL,SLACK_*
+  env:
+    STAGING_URL: ${{ vars.STAGING_URL }}
+    SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
 ```
 
 Outputs: `has-changes` and `plan` (the text output). The plan is also written to the job summary.
@@ -162,7 +175,7 @@ MIT, see [LICENSE](LICENSE).
 
 - **API URL**: `--api-url` / `SUTRAMX_API_URL` must be `https://` (plain `http://` only for `localhost`). A warning is printed when the key is sent to a host outside `sutramx.com`, or when `NODE_TLS_REJECT_UNAUTHORIZED=0` disables certificate checks. Redirects are never followed.
 - **Key handling**: prefer `echo "$KEY" | sutramx login` or the hidden prompt over `--api-key` (visible in `ps` and shell history). The credentials file is written `0600` via an exclusive temp file and rename (a symlink at the path is replaced, not followed); a warning is printed if it becomes readable by others.
-- **`${VAR}` in sutramx.yml**: the file may not read `SUTRAMX_API_KEY`, `SUTRAMX_CONFIG`, `GITHUB_TOKEN`, `GH_TOKEN`, `ACTIONS_*`, `INPUT_*`, `NPM_TOKEN`, `NODE_AUTH_TOKEN`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `CI_JOB_TOKEN`, `CI_JOB_JWT*` or `SYSTEM_ACCESSTOKEN`, so a pull request cannot copy credentials into a monitor or into the plan comment. Set `SUTRAMX_ALLOWED_ENV="SLACK_*,PAGERDUTY_KEY"` to allow only the listed variables.
+- **`${VAR}` in sutramx.yml**: the file may not read `SUTRAMX_API_KEY`, `SUTRAMX_CONFIG`, `GITHUB_TOKEN`, `GH_TOKEN`, `ACTIONS_*`, `INPUT_*`, `NPM_TOKEN`, `NODE_AUTH_TOKEN`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `CI_JOB_TOKEN`, `CI_JOB_JWT*` or `SYSTEM_ACCESSTOKEN`, so a pull request cannot copy credentials into a monitor or into the plan comment. Set `SUTRAMX_ALLOWED_ENV="SLACK_*,PAGERDUTY_KEY"` to allow only the listed variables (names, or prefixes ending in `*`). **In CI** (`CI` or `GITHUB_ACTIONS` set to anything but `false`/`0`) the default flips: with no `SUTRAMX_ALLOWED_ENV` (the action's `allowed-env` input), `${VAR}` reads nothing, because a pull request could otherwise reference any other secret in the runner's environment. Keep the allowlist in the workflow, not in a file the pull request can change. Values read through `${VAR}` (4+ characters) are printed as `${VAR}` in plan/diff/apply output, `--json` and error messages, never as the value; they are still sent to the API.
 - **Plan output**: integration config values whose names look like credentials (`*url*`, `*token*`, `*secret*`, `*key*`, ...) are shown as `(secret, not shown)` in `plan`, `diff` and `--json`.
 - **Deletes**: only with `--prune` / `--prune-integrations` on the command line, never from the file alone. `apply` with prune refuses to delete every managed monitor when the file declares none (an empty or truncated file); pass `--allow-delete-all` if that is intended. `monitors delete` and `incidents note --public` ask first unless `--yes`.
 - **Plan = apply**: `apply` sends the fingerprint of the plan it showed; the API refuses a changed plan (`409 PLAN_CHANGED`). Status page and integration changes are planned once, shown, and applied only if they are still the ones shown.

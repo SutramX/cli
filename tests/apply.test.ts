@@ -21,6 +21,7 @@ let fingerprint: string | undefined;
 let planDeletes = true;
 let planReplace = false;
 let applyStatus = 200;
+let echoPlan: 'none' | 'change' | 'error' = 'none';
 let server: http.Server;
 let baseUrl = '';
 
@@ -37,6 +38,12 @@ before(async () => {
             };
             const route = `${req.method} ${req.url}`;
             if (route === 'POST /automation/monitors/plan') {
+                // Echo what the CLI sent, as a plan change (stdout) or a validation error (stderr).
+                if (echoPlan === 'error') return send(422, { error: `Invalid monitor: ${JSON.stringify(body.monitors)}` });
+                if (echoPlan === 'change') {
+                    const [first] = body.monitors;
+                    return send(200, { changes: [{ action: 'create', key: first.key, name: first.name, type: 'http', monitor_id: null, changes: [{ field: 'url', from: null, to: first.url }] }], summary: {} });
+                }
                 const changes = [
                     { action: 'create', key: 'api', name: 'API', type: 'http', monitor_id: null, changes: [] },
                     ...(planReplace ? [{ action: 'replace', key: KEPT.external_id, name: KEPT.name, type: 'ping', monitor_id: KEPT.id, changes: [{ field: 'type', from: 'http', to: 'ping' }] }] : []),
@@ -66,6 +73,7 @@ beforeEach(() => {
     planDeletes = true;
     planReplace = false;
     applyStatus = 200;
+    echoPlan = 'none';
 });
 
 function manifest(extra = ''): string {
@@ -230,4 +238,35 @@ test('SUTRAMX_API_KEY for another workspace than the saved login: plan shows it,
     const confirmed = await sutramx(['apply', '-f', manifest(), '--prune', '--auto-approve', '--workspace', 'ws_1'], { env });
     assert.equal(confirmed.code, 0, confirmed.stderr);
     assert.equal(applyCalls().length, 1);
+});
+
+test('CI: ${VAR} reads nothing unless SUTRAMX_ALLOWED_ENV lists it, and expanded values never reach the output', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sutramx-env-'));
+    const file = join(dir, 'sutramx.yml');
+    writeFileSync(file, 'monitors:\n  - key: staging\n    name: "Staging ${RUNNER_SECRET_NAME:-x}"\n    url: "${STAGING_URL}"\n');
+    const env = { CI: 'true', STAGING_URL: 'https://staging-7f3a9c.example.com/health', RUNNER_SECRET_NAME: 'ghp_runnerSecretValue123' };
+
+    const denied = await sutramx(['plan', '-f', file], { env });
+    assert.equal(denied.code, 1);
+    assert.match(denied.stderr, /STAGING_URL \(at monitors\[0\]\.url\)/);
+    assert.match(denied.stderr, /RUNNER_SECRET_NAME/);
+    assert.match(denied.stderr, /SUTRAMX_ALLOWED_ENV/);
+    assert.equal(calls.length, 0);
+
+    echoPlan = 'change';
+    const allowed = await sutramx(['diff', '-f', file], { env: { ...env, SUTRAMX_ALLOWED_ENV: 'STAGING_URL,RUNNER_SECRET_NAME' } });
+    assert.equal(allowed.code, 0, allowed.stderr);
+    assert.equal(calls.find((call) => call.url === '/automation/monitors/plan')!.body.monitors[0].url, env.STAGING_URL);
+    assert.match(allowed.stdout, /\$\{STAGING_URL\}/);
+    assert.match(allowed.stdout, /Staging \$\{RUNNER_SECRET_NAME\}/);
+    assert.ok(!allowed.stdout.includes('staging-7f3a9c') && !allowed.stdout.includes('runnerSecretValue'), allowed.stdout);
+
+    const json = await sutramx(['plan', '--json', '-f', file], { env: { ...env, SUTRAMX_ALLOWED_ENV: 'STAGING_URL,RUNNER_SECRET_NAME' } });
+    assert.ok(!json.stdout.includes('staging-7f3a9c') && !json.stdout.includes('runnerSecretValue'), json.stdout);
+
+    echoPlan = 'error';
+    const failed = await sutramx(['plan', '-f', file], { env: { ...env, SUTRAMX_ALLOWED_ENV: 'STAGING_*,RUNNER_SECRET_NAME' } });
+    assert.equal(failed.code, 1);
+    assert.match(failed.stderr, /Invalid monitor/);
+    assert.ok(!failed.stderr.includes('staging-7f3a9c') && !failed.stderr.includes('runnerSecretValue'), failed.stderr);
 });
