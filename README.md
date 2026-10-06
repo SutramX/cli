@@ -139,6 +139,8 @@ sutramx apply
 
 Outputs: `has-changes` and `plan` (the text output). The plan is also written to the job summary.
 
+`cli-version` defaults to the CLI release the action ships with (the `version` in `package.json`; every release bumps both together), so a new npm release never changes what an existing workflow runs. Set an exact version to pin it yourself, or `cli-version: latest` to opt in to following every release. Pin the action itself to a full commit SHA (`uses: sutramx/cli/action@<sha>`) for the strongest guarantee.
+
 ## API used
 
 `GET /automation/whoami`, `POST /automation/monitors/plan`, `POST /automation/monitors/apply`, `GET|PUT|DELETE /automation/monitors/:key`, `PUT /automation/monitors/by-id/:id/key`, plus the regular `/monitors` (including `/:id/checks`, `/:id/run-check`, `/:id/regions`), `/incidents` (list, get, acknowledge, resolve, notes), `/maintenance` (list), `/status/pages`, `/reliability` (overview, monitor), `/integrations` and `/catalog/regions` endpoints.
@@ -166,4 +168,4 @@ MIT, see [LICENSE](LICENSE).
 - **Plan = apply**: `apply` sends the fingerprint of the plan it showed; the API refuses a changed plan (`409 PLAN_CHANGED`). Status page and integration changes are planned once, shown, and applied only if they are still the ones shown.
 - **Workspace scope**: a key only ever acts on its own workspace, and `plan` / `apply` print which one. When that workspace differs from the one saved by `sutramx login` (e.g. `SUTRAMX_API_KEY` set for another workspace) or from `settings.workspace_id`, `apply` refuses deletes and replaces unless `--workspace <id>` names the key's workspace (and `--workspace` always refuses a key for another workspace); the CLI takes the API URL only from `--api-url`, `SUTRAMX_API_URL` or the credentials file, never from `sutramx.yml`. The key is never printed.
 - **Retries**: 429 answers are retried (honouring `Retry-After`, at most 4 attempts); 502/503/504 and network errors are retried only for GET/PUT/DELETE.
-- **GitHub Action**: the key is masked with `::add-mask::`, `cli-version` must be a registry version or tag, and inputs reach the script only through environment variables. Pin `cli-version` to an exact version in production.
+- **GitHub Action**: the key is masked with `::add-mask::`, `cli-version` must be a registry version or tag, and inputs reach the script only through environment variables. `cli-version` defaults to the exact release the action ships with (`latest` is opt-in only), and `actions/setup-node` is pinned to a full commit SHA.
