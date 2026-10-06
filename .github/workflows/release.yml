@@ -1,7 +1,8 @@
 # Publishes @sutramx/cli to npm when a version tag (v1.2.3) is pushed.
-# Needs the repository secret NPM_TOKEN (an npm automation/granular token
-# with publish rights on the @sutramx scope). Provenance links the package
-# to this workflow run, so it must run on GitHub-hosted runners.
+# Uses npm Trusted Publishing (OIDC): no npm token is stored anywhere. The
+# package's npm settings trust SutramX/cli, workflow release.yml,
+# environment npm. npm shows the release as published by GitHub Actions,
+# with provenance linking it to this run (GitHub-hosted runners only).
 name: Release
 
 on:
@@ -21,7 +22,7 @@ jobs:
     environment: npm
     permissions:
       contents: read
-      id-token: write # npm provenance (OIDC)
+      id-token: write # npm Trusted Publishing + provenance (OIDC)
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -35,6 +36,8 @@ jobs:
         run: node scripts/check-version.mjs "$TAG"
         env:
           TAG: ${{ github.ref_name }}
+      - name: npm with Trusted Publishing support (>= 11.5.1)
+        run: npm install -g npm@^11.5.1
       - run: npm ci
       - name: Audit production dependencies
         run: npm audit --omit=dev --audit-level=high
@@ -45,5 +48,3 @@ jobs:
         run: npm pack --dry-run
       - name: Publish
         run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
