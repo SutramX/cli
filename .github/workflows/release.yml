@@ -31,13 +31,14 @@ jobs:
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org
-          cache: npm
+          # No dependency cache in the publishing job: it holds the OIDC
+          # publish token, and npm ci from the lockfile is fast enough.
       - name: Tag must match package.json and src/version.ts
         run: node scripts/check-version.mjs "$TAG"
         env:
           TAG: ${{ github.ref_name }}
-      - name: npm with Trusted Publishing support (>= 11.5.1)
-        run: npm install -g npm@^11.5.1
+      - name: npm with Trusted Publishing support (>= 11.5.1), pinned exactly
+        run: npm install -g npm@11.19.0
       - run: npm ci
       - name: Audit production dependencies
         run: npm audit --omit=dev --audit-level=high
