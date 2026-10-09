@@ -2,6 +2,8 @@
 # Pull requests that touch sutramx.yml get the plan as a comment; merging to
 # main applies it. Add the API key as the repository secret SUTRAMX_API_KEY
 # (an "Automation access" key if the file manages integrations).
+# Actions are pinned to commit SHAs (this job holds the API key and can write
+# PR comments); bump them deliberately, e.g. with Dependabot.
 name: SutramX monitors
 
 on:
@@ -24,10 +26,10 @@ jobs:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - id: plan
         # Until the action is published, copy cli/action/ into your repo and use: ./.github/actions/sutramx
-        uses: sutramx/cli/action@v1
+        uses: sutramx/cli/action@6751823f1fa79e2d62b5aa17afd40dc213d39cdc # v1 (v0.1.2)
         with:
           command: diff
           api-key: ${{ secrets.SUTRAMX_API_KEY }}
@@ -36,7 +38,7 @@ jobs:
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
       - name: Comment the plan on the pull request
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
         env:
           PLAN: ${{ steps.plan.outputs.plan }}
           HAS_CHANGES: ${{ steps.plan.outputs.has-changes }}
@@ -54,8 +56,8 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     steps:
-      - uses: actions/checkout@v4
-      - uses: sutramx/cli/action@v1
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: sutramx/cli/action@6751823f1fa79e2d62b5aa17afd40dc213d39cdc # v1 (v0.1.2)
         with:
           command: apply
           api-key: ${{ secrets.SUTRAMX_API_KEY }}
