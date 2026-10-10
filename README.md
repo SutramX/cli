@@ -17,7 +17,7 @@ Node.js 20 or newer is required.
 | `SUTRAMX_API_KEY` (and optionally `SUTRAMX_API_URL`) | set; recommended for CI |
 | `sutramx login` | saves the key to `~/.config/sutramx/credentials.json` (mode 0600; `$XDG_CONFIG_HOME` and `$SUTRAMX_CONFIG` are honoured). The API URL is saved only when you pass `--api-url` to `login`; `SUTRAMX_API_URL` in the environment applies to that run only |
 
-A key acts on the one workspace it was created in. Keys have one of three access levels, chosen when the key is created: **Read-only** (`whoami`, `monitors list|get|checks`, `incidents list|get`, `status-pages list|get`, `uptime`, `maintenance list`, `regions`, `init --from-workspace`, `plan` and `diff` work; `apply`, `monitors create|update|pause|resume|delete|adopt|run-check`, `incidents ack|resolve|note` and every other change are refused with `403 READ_ONLY_ACCESS`; use it for CI jobs that only post the plan), **Standard** and **Automation**. A standard key can manage monitors and status pages. To manage **integrations** from `sutramx.yml`, create the key with **Automation access**. Per-monitor alert recipients (`config.notification_emails`) also need an Automation access key; a standard key gets a clear error instead of a change that never applies.
+A key acts on the one workspace it was created in. Keys have one of three access levels, chosen when the key is created: **Read-only** (`whoami`, `monitors list|get|checks`, `incidents list|get`, `why`, `status-pages list|get`, `uptime`, `maintenance list`, `regions`, `init --from-workspace`, `plan` and `diff` work; `apply`, `monitors create|update|pause|resume|delete|adopt|run-check`, `incidents ack|resolve|note` and every other change are refused with `403 READ_ONLY_ACCESS`; use it for CI jobs that only post the plan), **Standard** and **Automation**. A standard key can manage monitors and status pages. To manage **integrations** from `sutramx.yml`, create the key with **Automation access**. Per-monitor alert recipients (`config.notification_emails`) also need an Automation access key; a standard key gets a clear error instead of a change that never applies.
 
 ## Commands
 
@@ -43,6 +43,7 @@ A key acts on the one workspace it was created in. Keys have one of three access
 | `sutramx status-pages list [--json]` | status pages with visibility and monitor count; alias `ls` |
 | `sutramx status-pages get <id or slug> [--json]` | one status page with its monitors |
 | `sutramx uptime [--days 30] [--monitor <id or key>] [--json]` | uptime %, incidents, MTTR and health per monitor, plus SLO error budgets (`--days`: 7, 14, 30, 90); alias `report` |
+| `sutramx why <monitor or incident id> [--no-last-incident] [--json]` | why it is down, or why an alert fired: the verdict, whose fault it is (yours, external, our checker), each region's vote (blocked and inconclusive regions abstain), the quorum rule and whether it was met, the failure class, vendor signals and the 7/30-day flakiness score. Takes an incident id, or a monitor id, key, exact name or name/URL fragment; a monitor with an open incident explains that incident, otherwise its current state plus its most recent incident. Several matching monitors are listed (exit 1) instead of guessing; paused monitors and active maintenance windows are called out |
 | `sutramx maintenance list [--status ongoing] [--json]` | maintenance windows with their scope and recurrence (`--status`: scheduled, ongoing, completed, cancelled); alias `ls` |
 | `sutramx regions [--json]` | probe location codes (works without a key) |
 | `sutramx init [-f file] [--from-workspace] [--force]` | write a starter `sutramx.yml`, or one describing what exists now |
@@ -156,7 +157,7 @@ Outputs: `has-changes` and `plan` (the text output). The plan is also written to
 
 ## API used
 
-`GET /automation/whoami`, `POST /automation/monitors/plan`, `POST /automation/monitors/apply`, `GET|PUT|DELETE /automation/monitors/:key`, `PUT /automation/monitors/by-id/:id/key`, plus the regular `/monitors` (including `/:id/checks`, `/:id/run-check`, `/:id/regions`), `/incidents` (list, get, acknowledge, resolve, notes), `/maintenance` (list), `/status/pages`, `/reliability` (overview, monitor), `/integrations` and `/catalog/regions` endpoints.
+`GET /automation/whoami`, `POST /automation/monitors/plan`, `POST /automation/monitors/apply`, `GET|PUT|DELETE /automation/monitors/:key`, `PUT /automation/monitors/by-id/:id/key`, plus the regular `/monitors` (including `/:id/checks`, `/:id/run-check`, `/:id/regions`, `/:id/explanation`, `/:id/flakiness`), `/incidents` (list, get, `/:id/explanation`, acknowledge, resolve, notes), `/maintenance` (list), `/status/pages`, `/reliability` (overview, monitor), `/integrations` and `/catalog/regions` endpoints.
 
 ## Development
 

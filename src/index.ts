@@ -15,6 +15,7 @@ import {
 } from './operations.js';
 import { bold, clean, cyan, dim, green, red, renderPlan, renderStep, table, yellow } from './render.js';
 import { VERSION } from './version.js';
+import { renderWhy, why } from './why.js';
 import { applyPlan, buildPlan, checkTarget, destructiveCounts, effectiveOptions, PlanChangedError, PlanOptions, pruneSettingWarnings, redactedPlan } from './workspace.js';
 
 /**
@@ -404,6 +405,18 @@ program.command('uptime').alias('report')
         const report = await uptimeReport(client, Number(options.days), options.monitor ? await resolveMonitorId(client, options.monitor) : undefined);
         if (options.json) return printJson(report);
         stdout.write(`${renderUptimeReport(report)}\n`);
+    });
+
+program.command('why <target>')
+    .description('Why is it down / why did this alert fire: region votes, quorum, failure class, your fault or external, vendor signals and flakiness for an incident id, or a monitor (id, key or name)')
+    .option('--no-last-incident', 'for a monitor with no open incident, do not also explain its most recent incident')
+    .option('--json', 'JSON output')
+    .action(async (target: string, options: { lastIncident: boolean; json?: boolean; }) => {
+        const result = await why(api(), target, { lastIncident: options.lastIncident });
+        if (options.json) printJson(result);
+        else stdout.write(`${renderWhy(result)}\n`);
+        // Several monitors matched: nothing was explained.
+        if (result.outcome === 'ambiguous') process.exitCode = 1;
     });
 
 const maintenance = program.command('maintenance').description('Maintenance windows (alerts are silenced while one is active)');
