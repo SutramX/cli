@@ -37,7 +37,7 @@ inputs:
     description: Version of @sutramx/cli to run. Defaults to the release this action ships with; "latest" (opt-in) follows every npm release
     required: false
     # Must equal package.json "version" (scripts/check-version.mjs enforces it).
-    default: 0.1.2
+    default: 0.1.3
 
 outputs:
   has-changes:
