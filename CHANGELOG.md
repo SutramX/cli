@@ -2,7 +2,7 @@
 
 All notable changes to `@sutramx/cli` are listed here. Releases are the `vX.Y.Z` git tags and the versions on npm.
 
-## Unreleased
+## 0.2.0 (October 13, 2026)
 
 ### Changed
 
