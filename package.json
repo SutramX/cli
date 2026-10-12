@@ -39,6 +39,7 @@
     "!dist/**/*.map",
     "examples",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "engines": {
