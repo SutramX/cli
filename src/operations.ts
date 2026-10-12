@@ -1,4 +1,4 @@
-import type { SutramXApi } from './api.js';
+import { LONG_TIMEOUT_MS, type SutramXApi } from './api.js';
 import { clean, dim, green, red, table, yellow } from './render.js';
 
 /**
@@ -275,7 +275,7 @@ export interface RunCheckResult {
 }
 
 export async function runCheck(api: SutramXApi, id: string): Promise<RunCheckResult> {
-    return api.post<RunCheckResult>(`/monitors/${requireMonitorId(id)}/run-check`);
+    return api.post<RunCheckResult>(`/monitors/${requireMonitorId(id)}/run-check`, {}, { timeoutMs: LONG_TIMEOUT_MS });
 }
 
 export function renderRunCheck(result: RunCheckResult): string {

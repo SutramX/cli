@@ -58,9 +58,32 @@ A key acts on the one workspace it was created in. Keys have one of three access
 
 Maintenance windows silence alerts, so creating, changing and deleting them is owner-only: the API refuses every API key (`403 WORKSPACE_OWNER_REQUIRED`), and the CLI only lists them. Manage them in the dashboard.
 
-`plan`, `diff` and `apply` accept `-f, --file <path>` (default `sutramx.yml`), `--prune` / `--no-prune`, `--adopt-by-name`, `--prune-integrations`, `--workspace <id>` and `--json`. Nothing is ever deleted without `--prune` (monitors) or `--prune-integrations` (integrations) on the command line: `settings.prune` / `settings.prune_integrations` in the file only produce a warning. With `--detailed-exitcode`, `plan` and `diff` exit 0 when nothing would change, 2 when something would, 1 on error. `apply` shows the plan with the target workspace and asks for confirmation on a terminal (naming the workspace and how many monitors would be deleted or replaced and integrations deleted); in CI pass `--auto-approve` or `--yes` (without it a non-interactive apply is refused). `--allow-delete-all` lets a prune delete every managed monitor when the file declares none (otherwise refused).
+`plan`, `diff` and `apply` accept `-f, --file <path>` (default `sutramx.yml`), `--prune` / `--no-prune`, `--adopt-by-name`, `--prune-integrations`, `--workspace <id>` and `--json`. Nothing is ever deleted without `--prune` (monitors) or `--prune-integrations` (integrations) on the command line: `settings.prune` / `settings.prune_integrations` in the file only produce a warning. With `--detailed-exitcode`, `plan` and `diff` exit 0 when nothing would change, 2 when something would, and another non-zero code on error (see [exit codes](#network-retries-and-exit-codes)). `apply` shows the plan with the target workspace and asks for confirmation on a terminal (naming the workspace and how many monitors would be deleted or replaced and integrations deleted); in CI pass `--auto-approve` or `--yes` (without it a non-interactive apply is refused). `--allow-delete-all` lets a prune delete every managed monitor when the file declares none (otherwise refused).
 
 `apply` applies exactly the plan it showed: it sends the plan's fingerprint, and if the workspace changed in between the API refuses (`409 PLAN_CHANGED`) and nothing is applied; run `apply` again to review the new plan. Against an older API that returns no plan fingerprint, a prune that would delete monitors is refused unless you pass `--force-prune-without-plan-check` (a prune that shows no deletes is applied without prune).
+
+## Network, retries and exit codes
+
+| Variable | Effect |
+|---|---|
+| `SUTRAMX_TIMEOUT` | seconds to wait for each request attempt (decimals allowed). Default 20, and 120 for `plan`, `apply` and `monitors run-check`, which do real work while you wait. A call gives up, retries included, after three times this |
+| `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY` (or lower case) | send requests through a proxy; hosts in `NO_PROXY` go direct. Behind a TLS-inspecting proxy, point `NODE_EXTRA_CA_CERTS` at its CA certificate |
+
+Reads (`GET`, `PUT`, `DELETE`) are retried on network errors, timeouts and HTTP 502/503/504; any request is retried on HTTP 429 (honouring `Retry-After`, in seconds or as a date; a wait longer than 30 seconds is reported instead). Every `POST` carries an `Idempotency-Key` that its retries reuse, so the API runs it once; a `POST` is retried like a read. Each retry prints a note on stderr. A network failure names its cause and the host (`ECONNREFUSED`, `ENOTFOUND`, `ETIMEDOUT`, `CERT_*`, `UNABLE_TO_VERIFY_LEAF_SIGNATURE` ...). A response that is not JSON (a proxy or captive portal page) or is larger than 10 MB is an error. Warnings the API returns with a change (e.g. an ignored field) are printed on stderr; prompts also go to stderr, so stdout stays clean for `--json`. Requests carry `User-Agent` and `X-SutramX-Client: sutramx-cli/<version>`.
+
+Exit codes:
+
+| Code | Meaning |
+|---|---|
+| `0` | success (and, for `plan` / `diff`, nothing would change) |
+| `1` | any other error (including an `apply` with failed changes, an ambiguous `why`, a server error) |
+| `2` | `plan` / `diff --detailed-exitcode`: something would change (never an error) |
+| `3` | authentication or permission: not logged in, invalid or disabled key (HTTP 401), not allowed (HTTP 403, e.g. `READ_ONLY_ACCESS`) |
+| `4` | not found (HTTP 404) |
+| `5` | rate limited (HTTP 429) |
+| `6` | network failure or timeout (the API was not reached) |
+| `7` | plan limit: your plan does not allow it (`category: PLAN_LIMIT`, `ENTITLEMENT_LIMIT_REACHED`, `ENTITLEMENT_INTERVAL_TOO_SHORT`, `MONITOR_TOTAL_LIMIT_REACHED`, `CONNECTION_LIMIT_REACHED`, `LIMIT_REACHED`, `AI_LIMIT_REACHED`, `FEATURE_NOT_AVAILABLE`); retrying does not help |
+| `8` | usage or validation: unknown command or option, invalid argument, invalid `sutramx.yml`, HTTP 400/422 |
 
 ## sutramx.yml
 

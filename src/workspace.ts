@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { SutramXApi } from './api.js';
-import { ApiError } from './api.js';
+import { ApiError, LONG_TIMEOUT_MS } from './api.js';
 import { Manifest, monitorSpecs } from './manifest.js';
 import {
     createMonitorResolver,
@@ -206,7 +206,7 @@ function leavingMonitorIds(monitorPlan: MonitorPlanResponse): Set<string> {
 
 export async function buildPlan(api: SutramXApi, manifest: Manifest, options: Required<PlanOptions>): Promise<WorkspacePlan> {
     const [monitorPlan, me] = await Promise.all([
-        api.post<MonitorPlanResponse>('/automation/monitors/plan', { monitors: monitorSpecs(manifest), prune: options.prune, adopt_by_name: options.adoptByName }),
+        api.post<MonitorPlanResponse>('/automation/monitors/plan', { monitors: monitorSpecs(manifest), prune: options.prune, adopt_by_name: options.adoptByName }, { timeoutMs: LONG_TIMEOUT_MS }),
         api.get<{ workspace_id?: string; plan?: string; api_key_access?: string; can_manage_alert_channels?: boolean; }>('/automation/whoami'),
     ]);
     const { statusPages, integrations } = await planOtherResources(api, manifest, options, leavingMonitorIds(monitorPlan));
@@ -344,7 +344,7 @@ export async function applyPlan(
             continue_on_error: options.continueOnError === true,
             ...(options.expectedFingerprint ? { expected_fingerprint: options.expectedFingerprint } : {}),
             ...(options.allowPruneWithoutFingerprint ? { allow_prune_without_fingerprint: true } : {}),
-        });
+        }, { timeoutMs: LONG_TIMEOUT_MS });
     } catch (error) {
         if (error instanceof ApiError && error.status === 409 && error.code === 'PLAN_CHANGED') throw new PlanChangedError();
         record({ kind: 'monitor', action: 'apply', label: 'monitors', status: 'failed', error: errorText(error) });

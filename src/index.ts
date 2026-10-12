@@ -2,8 +2,8 @@
 import { existsSync, writeFileSync } from 'node:fs';
 import { stdin, stdout } from 'node:process';
 import { createInterface } from 'node:readline/promises';
-import { Command, InvalidArgumentError, Option } from 'commander';
-import { ApiError, describeError, SutramXApi } from './api.js';
+import { Command, CommanderError, InvalidArgumentError, Option } from 'commander';
+import { ApiError, describeError, EXIT, exitCodeForApiError, SutramXApi } from './api.js';
 import { apiFromEnvironment, credentialsPath, NotLoggedInError, removeCredentials, resolveAuth, writeCredentials } from './config.js';
 import { exportMonitors, SAMPLE_MANIFEST } from './exportManifest.js';
 import { readSecret as readSecretFrom } from './prompt.js';
@@ -33,7 +33,12 @@ function redactOutput(stream: NodeJS.WriteStream): void {
 redactOutput(process.stdout);
 redactOutput(process.stderr);
 
-/** Exit codes: 0 ok / no changes, 1 error, 2 changes present (plan --detailed-exitcode). */
+/**
+ * Exit codes (README "Exit codes"): 0 ok / no changes, 1 error, 2 changes
+ * present (plan/diff --detailed-exitcode; never an error), 3 authentication
+ * or permission, 4 not found, 5 rate limited, 6 network or timeout, 7 plan
+ * limit, 8 usage or validation (bad options, invalid sutramx.yml, API 400/422).
+ */
 
 interface GlobalOptions {
     apiUrl?: string;
@@ -45,7 +50,13 @@ program
     .description('SutramX uptime monitoring from the command line, and monitors as code with sutramx.yml.')
     .version(VERSION)
     .addOption(new Option('--api-url <url>', 'API base URL').env('SUTRAMX_API_URL'))
-    .showHelpAfterError();
+    .addHelpText('after', `
+Environment: SUTRAMX_API_KEY, SUTRAMX_API_URL, SUTRAMX_TIMEOUT (seconds per request attempt; default 20, 120 for plan/apply/run-check),
+HTTPS_PROXY / HTTP_PROXY / NO_PROXY.
+Exit codes: 0 ok, 1 error, 2 changes (plan/diff --detailed-exitcode), 3 auth, 4 not found, 5 rate limited, 6 network/timeout, 7 plan limit, 8 usage/validation.`)
+    .showHelpAfterError()
+    // Usage errors reach the handler at the end (exit 8) instead of exiting 1 here.
+    .exitOverride();
 
 function api(): SutramXApi {
     return apiFromEnvironment({ apiUrl: (program.opts() as GlobalOptions).apiUrl });
@@ -55,13 +66,14 @@ function printJson(value: unknown) {
     stdout.write(`${JSON.stringify(value, null, 2)}\n`);
 }
 
+/** Prompts go to stderr so stdout stays machine-readable. */
 function readSecret(prompt: string): Promise<string> {
-    return readSecretFrom(prompt, stdin, stdout);
+    return readSecretFrom(prompt, stdin, process.stderr);
 }
 
 async function confirm(question: string): Promise<boolean> {
     if (!stdin.isTTY) return false;
-    const rl = createInterface({ input: stdin, output: stdout });
+    const rl = createInterface({ input: stdin, output: process.stderr });
     try {
         const answer = await rl.question(`${question} Type "yes" to continue: `);
         return answer.trim().toLowerCase() === 'yes';
@@ -610,8 +622,20 @@ program.command('validate')
     });
 
 program.parseAsync(process.argv).catch((error: unknown) => {
+    if (error instanceof CommanderError) {
+        // --help and --version also arrive here (exit code 0); commander already printed parse errors.
+        if (error.exitCode === 0) return;
+        if (error.code === 'commander.invalidArgument' && !error.message.startsWith('error:')) {
+            process.stderr.write(`${red('Error:')} ${error.message}\n`);
+        }
+        process.exitCode = EXIT.USAGE;
+        return;
+    }
     if (error instanceof ManifestError || error instanceof NotLoggedInError || error instanceof PlanChangedError) process.stderr.write(`${red('Error:')} ${error.message}\n`);
     else if (error instanceof ApiError) process.stderr.write(`${red('Error:')} ${describeError(error)}\n`);
     else process.stderr.write(`${red('Error:')} ${(error as Error)?.message || String(error)}\n`);
-    process.exitCode = 1;
+    process.exitCode = error instanceof ApiError ? exitCodeForApiError(error)
+        : error instanceof NotLoggedInError ? EXIT.AUTH
+            : error instanceof ManifestError ? EXIT.USAGE
+                : EXIT.ERROR;
 });
