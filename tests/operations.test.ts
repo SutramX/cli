@@ -142,6 +142,22 @@ test('monitors update sends only the changed fields, then the regions', async ()
     await assert.rejects(updateMonitor(client(), '../admin', { name: 'x' }), /UUID/);
 });
 
+test('a renamed location code (the Arizona one) is sent as typed: the API maps it and answers with the current code', async () => {
+    // The CLI never rewrites codes itself, so it keeps working against an API
+    // that does not know the new code yet; the API (any version) does the mapping.
+    const OLD = 'usa-az-probe';
+    respond = (call) => ({ status: 200, body: call.method === 'PUT' && call.url.pathname.endsWith('/regions')
+        ? { selected: ['usa-az'] }
+        : call.url.pathname.endsWith('/checks') ? { items: [{ checked_at: '2026-10-13T10:00:00Z', region: 'usa-az', status: 'up', response_time_ms: 210 }], next_before: null }
+            : { id: MONITOR_ID, name: 'm', probe_regions: ['usa-az'] } });
+    const monitor = await updateMonitor(client(), MONITOR_ID, { regions: [OLD] });
+    assert.deepEqual(calls[0].body, { regions: [OLD] });
+    assert.match(renderMonitor(monitor), /regions usa-az/);
+    const page = await listChecks(client(), MONITOR_ID, { region: OLD });
+    assert.equal(calls.at(-1)!.url.searchParams.get('region'), OLD);
+    assert.match(renderChecks(page), /usa-az/);
+});
+
 test('monitors checks and run-check use the monitor endpoints and validate filters', async () => {
     respond = (call) => ({ status: 200, body: call.method === 'POST'
         ? { region: 'fra1', status: 'down', response_time_ms: 120, status_code: 503, error_message: 'Bad\u001b[2J gateway' }

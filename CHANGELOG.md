@@ -9,6 +9,7 @@ All notable changes to `@sutramx/cli` are listed here. Releases are the `vX.Y.Z`
 - **Exit codes.** Errors now exit with a code that says what went wrong: `3` authentication or permission (not logged in, HTTP 401/403), `4` not found (HTTP 404), `5` rate limited (HTTP 429), `6` network failure or timeout, `7` plan limit (retrying will not help), `8` usage or validation (unknown command or option, invalid argument, invalid `sutramx.yml`, HTTP 400/422). `0` and `2` (`plan` / `diff --detailed-exitcode`: something would change) are unchanged, and `1` stays the code for any other error. Scripts that test for exactly `1` on failure should test for "not 0 and not 2" instead.
 - Login and confirmation prompts write to stderr, so stdout stays clean for `--json` and pipes.
 - Warnings the API returns with a change (for example an ignored field) are printed on stderr.
+- The Arizona, USA monitoring location code is now `usa-az` (`sutramx regions` lists it). The earlier code still works with `--region` and in `sutramx.yml`; the API saves and returns it as `usa-az`, so `plan` shows no change for a file that still uses it. Examples use `usa-az`.
 
 ### Added
 

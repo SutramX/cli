@@ -28,7 +28,7 @@ A key acts on the one workspace it was created in. Keys have one of three access
 | `sutramx whoami [--json]` | workspace, plan and limits |
 | `sutramx monitors list [--tag t] [--status down] [--json]` | monitors with live status (`--status`: up, down, degraded, paused, pending, maintenance); alias `ls` |
 | `sutramx monitors get <id or key> [--json]` | one monitor: a readable summary, or the full JSON with `--json` |
-| `sutramx monitors create --name N [--url U] [--type api] [--interval 60] [--region fra1 --region usa-az-probe] [--tag prod] [--config '{...}'] [--key k] [--paused] [--json]` | create (with `--key`: create or update) |
+| `sutramx monitors create --name N [--url U] [--type api] [--interval 60] [--region fra1 --region usa-az] [--tag prod] [--config '{...}'] [--key k] [--paused] [--json]` | create (with `--key`: create or update) |
 | `sutramx monitors update <id or key> [--name N] [--url U] [--interval 60] [--tag t ...] [--region fra1 ...] [--config '{...}'] [--json]` | change only the options given; `--tag`, `--region` and `--config` replace the whole list/object (start from `monitors get --json`) |
 | `sutramx monitors pause <id or key>` / `resume <id or key>` | stop or restart checks |
 | `sutramx monitors checks <id or key> [--limit 50] [--before <time>] [--region fra1] [--status problem] [--json]` | check history, newest first (`--status`: up, down, degraded, problem) |
@@ -105,7 +105,7 @@ monitors:
   - key: homepage         # stable id, unique per workspace: letters, digits, . _ : / -
     name: Homepage
     url: https://example.com
-    regions: [fra1, usa-az-probe]   # null = plan default; omit to leave as is
+    regions: [fra1, usa-az]   # null = plan default; omit to leave as is
   - key: api-health
     name: API health
     type: api
