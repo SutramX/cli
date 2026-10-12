@@ -108,9 +108,9 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export class ApiError extends Error {
     /** `category` from the error body (e.g. PLAN_LIMIT). */
-    category?: string;
+    declare category?: string;
     /** From a Retry-After header, in milliseconds. */
-    retryAfterMs?: number;
+    declare retryAfterMs?: number;
 
     constructor(public readonly status: number, message: string, public readonly code?: string, public readonly details?: unknown) {
         super(message);
@@ -180,11 +180,12 @@ export function parseErrorBody(status: number, body: unknown): ApiError {
             return error;
         }
     }
-    // Plain text (older rate limiters, proxies): keep a readable excerpt, not an HTML page.
-    if (typeof body === 'string' && body.trim() && !body.trimStart().startsWith('<')) {
-        return new ApiError(status, oneLine(body), status === 429 ? 'RATE_LIMITED' : undefined);
+    // Plain-text 429 (older rate limiters): keep its readable message, never an HTML page.
+    if (status === 429) {
+        const readable = typeof body === 'string' && body.trim() && !body.trimStart().startsWith('<');
+        return new ApiError(status, readable ? oneLine(body) : `HTTP ${status}`, 'RATE_LIMITED');
     }
-    return new ApiError(status, `HTTP ${status}`, status === 429 ? 'RATE_LIMITED' : undefined);
+    return new ApiError(status, `HTTP ${status}`);
 }
 
 /** Parsed JSON, the text itself when it is not JSON, undefined when empty. */
