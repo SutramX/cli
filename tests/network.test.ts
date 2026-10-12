@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, test } from 'node:test';
-import { ApiError, describeError, EXIT, exitCodeForApiError, isIdempotentPostRoute, isPlanLimit, NetworkError, parseRetryAfter, SutramXApi } from '../src/api.js';
+import { ApiError, describeError, EXIT, exitCodeForApiError, isIdempotentPostRoute, isSafePostRoute, isPlanLimit, NetworkError, parseRetryAfter, SutramXApi } from '../src/api.js';
 import { VERSION } from '../src/version.js';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
@@ -127,7 +127,7 @@ test('M1: 409 IDEMPOTENCY_REQUEST_IN_PROGRESS waits (Retry-After) and asks again
     assert.equal(other.seen.length, 1);
 });
 
-test('only the POST routes the API dedupes are retried; acknowledge, resolve, run-check, pause, test ... are sent once', async () => {
+test('only the POST routes the API dedupes (and the read-only plan) are retried; acknowledge, resolve, run-check, pause, test ... are sent once, except after a 429', async () => {
     for (const path of ['/monitors', '/v1/monitors', '/monitors/', '/monitors?x=1', '/monitors/bulk', '/monitors/detect/apply', '/monitor-groups', '/status/pages',
         '/status/pages/p1/monitors', '/integrations/slack/connections', '/integrations/slack/connect', '/incidents', '/incidents/runbooks',
         '/incidents/i1/notes', '/maintenance', '/automation/monitors/apply', '/api/v1/maintenance']) {
@@ -138,7 +138,7 @@ test('only the POST routes the API dedupes are retried; acknowledge, resolve, ru
         assert.ok(!isIdempotentPostRoute(path), path);
     }
 
-    // 503: a non-deduped POST is attempted once; POST /monitors is retried with the same key.
+    // 503: an action POST is attempted once; POST /monitors is retried with the same key.
     const busy = await serve((_req, res, _seen, index) => (index === 0 ? json(res, 503, { error: 'busy' }) : json(res, 201, { ok: true })));
     await assert.rejects(client(busy.url).post('/incidents/i1/resolve', {}), (error: unknown) => error instanceof ApiError && error.status === 503);
     assert.equal(busy.seen.length, 1);
@@ -148,10 +148,24 @@ test('only the POST routes the API dedupes are retried; acknowledge, resolve, ru
     }
     assert.equal(unavailable.seen.length, 4);
 
-    // 429 and a dropped connection: the action is not repeated either.
-    const limited = await serve((_req, res) => json(res, 429, { error: 'slow down' }, { 'Retry-After': '0' }));
-    await assert.rejects(client(limited.url).post('/monitors/m1/run-check', {}), (error: unknown) => error instanceof ApiError && error.status === 429);
-    assert.equal(limited.seen.length, 1);
+    // 429 is retried for an action too (the rate limiter answered before the handler ran).
+    const limited = await serve((_req, res, _seen, index) => {
+        if (index === 0) return json(res, 429, { error: 'slow down' }, { 'Retry-After': '0' });
+        json(res, 200, { ok: true });
+    });
+    assert.deepEqual(await client(limited.url).post('/monitors/m1/run-check', {}), { ok: true });
+    assert.equal(limited.seen.length, 2);
+
+    // The read-only plan POST is retried on 503 like a read; it is not a deduped create.
+    assert.ok(isSafePostRoute('/automation/monitors/plan') && isSafePostRoute('/v1/automation/monitors/plan/'));
+    assert.ok(!isSafePostRoute('/automation/monitors/apply') && !isSafePostRoute('/incidents/i1/resolve'));
+    const planning = await serve((_req, res, _seen, index) => {
+        if (index === 0) return json(res, 503, { error: 'busy' });
+        json(res, 200, { monitors: [] });
+    });
+    assert.deepEqual(await client(planning.url).post('/automation/monitors/plan', {}), { monitors: [] });
+    assert.equal(planning.seen.length, 2);
+    // A dropped connection: the action is not repeated.
     const dropped = await serve((req) => req.socket.destroy());
     await assert.rejects(client(dropped.url).post('/incidents/i1/acknowledge', {}), (error: unknown) => error instanceof NetworkError);
     assert.equal(dropped.seen.length, 1);
