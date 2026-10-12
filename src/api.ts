@@ -74,6 +74,60 @@ export const PLAN_LIMIT_CODES: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * POST routes the API runs at most once per Idempotency-Key. Mirrors
+ * IDEMPOTENT_ROUTES in backend/src/middleware/idempotency.ts (path after the
+ * optional /v1 prefix, no trailing slash): keep the two lists in step. Only
+ * these POSTs are retried; every other POST (acknowledge, resolve, run-check,
+ * pause, test, rotate-secret, plan ...) is sent once, because the API would
+ * run it again.
+ */
+const IDEMPOTENT_POST_ROUTES: readonly RegExp[] = [
+    /^\/monitors$/,
+    /^\/monitors\/bulk$/,
+    /^\/monitors\/detect\/apply$/,
+    /^\/monitor-groups$/,
+    /^\/status\/pages$/,
+    /^\/status\/pages\/[^/]+\/monitors$/,
+    /^\/integrations\/[^/]+\/connections$/,
+    /^\/integrations\/[^/]+\/connect$/,
+    /^\/incidents$/,
+    /^\/incidents\/runbooks$/,
+    /^\/incidents\/[^/]+\/notes$/,
+    /^\/maintenance$/,
+    /^\/automation\/monitors\/apply$/,
+];
+
+/**
+ * POST routes that only read (nothing changes on the server), so a retry is
+ * safe without an Idempotency-Key. Not deduped by the API: keep them out of
+ * IDEMPOTENT_POST_ROUTES.
+ */
+const SAFE_POST_ROUTES: readonly RegExp[] = [
+    /^\/automation\/monitors\/plan$/,
+];
+
+/** `path` without query string, fragment, /api or /v1 prefix and trailing slash. */
+function routeOf(path: string): string {
+    const normalized = path.split(/[?#]/, 1)[0].replace(/^\/api(?=\/|$)/, '').replace(/^\/v1(?=\/|$)/, '');
+    return normalized.length > 1 ? normalized.replace(/\/+$/, '') : normalized;
+}
+
+/**
+ * True when a POST to `path` (no query string; an /api or /v1 prefix and a
+ * trailing slash are ignored) is one the API dedupes by Idempotency-Key.
+ */
+export function isIdempotentPostRoute(path: string): boolean {
+    const route = routeOf(path);
+    return IDEMPOTENT_POST_ROUTES.some((pattern) => pattern.test(route));
+}
+
+/** True when a POST to `path` only reads, so it may be retried like a GET. */
+export function isSafePostRoute(path: string): boolean {
+    const route = routeOf(path);
+    return SAFE_POST_ROUTES.some((pattern) => pattern.test(route));
+}
+
+/**
  * Retry-After as milliseconds: delta-seconds ("120") or an HTTP-date
  * ("Wed, 21 Oct 2026 07:28:00 GMT"). null when absent or unreadable.
  */
@@ -312,14 +366,20 @@ export class SutramXApi {
         };
         if (!options.anonymous) headers.Authorization = `Bearer ${this.apiKey}`;
         if (options.body !== undefined) headers['Content-Type'] = 'application/json';
-        // One key per logical POST, reused by every retry of it: the API then
-        // runs it once (older APIs ignore the header).
+        // One key per logical POST, reused by every retry of it: on the routes
+        // the API dedupes (IDEMPOTENT_POST_ROUTES) it then runs once; other
+        // routes and older APIs ignore the header.
         const idempotencyKey = method === 'POST' ? (options.idempotencyKey ?? randomUUID()) : undefined;
         if (idempotencyKey) headers['Idempotency-Key'] = idempotencyKey;
-        // Retries: 429 for any method (the request was refused, not run);
-        // 502/503/504, timeouts and network errors for idempotent methods and
-        // for POSTs that carry an Idempotency-Key.
-        const retrySafe = method === 'GET' || method === 'PUT' || method === 'DELETE' || idempotencyKey !== undefined;
+        const basePath = new URL(this.baseUrl).pathname.replace(/\/+$/, '');
+        const routePath = basePath && url.pathname.startsWith(`${basePath}/`) ? url.pathname.slice(basePath.length) : url.pathname;
+        const dedupedPost = idempotencyKey !== undefined && isIdempotentPostRoute(routePath);
+        // 429 is retried for every method: the API's rate limiters answer
+        // before the handler, so the request did not run. 502/503/504,
+        // timeouts and network errors: GET, PUT, DELETE, the POSTs the API
+        // dedupes by their Idempotency-Key and the read-only POSTs
+        // (SAFE_POST_ROUTES). Any other POST (an action) is sent once.
+        const retrySafe = method === 'GET' || method === 'PUT' || method === 'DELETE' || dedupedPost || (method === 'POST' && isSafePostRoute(routePath));
         const perAttempt = timeoutFromEnv() ?? options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
         const deadline = Date.now() + perAttempt * DEADLINE_ATTEMPTS;
         const { fetch: fetchImpl, dispatcher } = await transport();
@@ -363,7 +423,7 @@ export class SutramXApi {
             text = undefined;
             const status = response.status;
             // The same POST is still running on the server: wait, then ask again with the same key.
-            if (status === 409 && idempotencyKey) {
+            if (status === 409 && dedupedPost) {
                 text = await this.read(response, host);
                 if (errorCodeOf(text) === 'IDEMPOTENCY_REQUEST_IN_PROGRESS' && inProgressWaits < 30) {
                     inProgressWaits += 1;

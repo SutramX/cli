@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, test } from 'node:test';
-import { ApiError, describeError, EXIT, exitCodeForApiError, isPlanLimit, NetworkError, parseRetryAfter, SutramXApi } from '../src/api.js';
+import { ApiError, describeError, EXIT, exitCodeForApiError, isIdempotentPostRoute, isSafePostRoute, isPlanLimit, NetworkError, parseRetryAfter, SutramXApi } from '../src/api.js';
 import { VERSION } from '../src/version.js';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
@@ -125,6 +125,75 @@ test('M1: 409 IDEMPOTENCY_REQUEST_IN_PROGRESS waits (Retry-After) and asks again
     const other = await serve((_req, res) => json(res, 409, { error: 'The plan changed', code: 'PLAN_CHANGED' }));
     await assert.rejects(client(other.url).post('/automation/monitors/apply', {}), (error: unknown) => error instanceof ApiError && error.code === 'PLAN_CHANGED');
     assert.equal(other.seen.length, 1);
+});
+
+test('only the POST routes the API dedupes (and the read-only plan) are retried; acknowledge, resolve, run-check, pause, test ... are sent once, except after a 429', async () => {
+    for (const path of ['/monitors', '/v1/monitors', '/monitors/', '/monitors?x=1', '/monitors/bulk', '/monitors/detect/apply', '/monitor-groups', '/status/pages',
+        '/status/pages/p1/monitors', '/integrations/slack/connections', '/integrations/slack/connect', '/incidents', '/incidents/runbooks',
+        '/incidents/i1/notes', '/maintenance', '/automation/monitors/apply', '/api/v1/maintenance']) {
+        assert.ok(isIdempotentPostRoute(path), path);
+    }
+    for (const path of ['/incidents/i1/acknowledge', '/incidents/i1/resolve', '/monitors/m1/run-check', '/monitors/m1/pause', '/monitors/m1/resume',
+        '/integrations/slack/connections/c1/test', '/monitors/m1/heartbeat/rotate-secret', '/automation/monitors/plan', '/monitors/m1', '/ai']) {
+        assert.ok(!isIdempotentPostRoute(path), path);
+    }
+
+    // 503: an action POST is attempted once; POST /monitors is retried with the same key.
+    const busy = await serve((_req, res, _seen, index) => (index === 0 ? json(res, 503, { error: 'busy' }) : json(res, 201, { ok: true })));
+    await assert.rejects(client(busy.url).post('/incidents/i1/resolve', {}), (error: unknown) => error instanceof ApiError && error.status === 503);
+    assert.equal(busy.seen.length, 1);
+    const unavailable = await serve((_req, res) => json(res, 503, { error: 'busy' }));
+    for (const path of ['/incidents/i1/acknowledge', '/monitors/m1/run-check', '/monitors/m1/pause', '/integrations/slack/connections/c1/test']) {
+        await assert.rejects(client(unavailable.url).post(path, {}), (error: unknown) => error instanceof ApiError && error.status === 503);
+    }
+    assert.equal(unavailable.seen.length, 4);
+
+    // 429 is retried for an action too (the rate limiter answered before the handler ran).
+    const limited = await serve((_req, res, _seen, index) => {
+        if (index === 0) return json(res, 429, { error: 'slow down' }, { 'Retry-After': '0' });
+        json(res, 200, { ok: true });
+    });
+    assert.deepEqual(await client(limited.url).post('/monitors/m1/run-check', {}), { ok: true });
+    assert.equal(limited.seen.length, 2);
+
+    // The read-only plan POST is retried on 503 like a read; it is not a deduped create.
+    assert.ok(isSafePostRoute('/automation/monitors/plan') && isSafePostRoute('/v1/automation/monitors/plan/'));
+    assert.ok(!isSafePostRoute('/automation/monitors/apply') && !isSafePostRoute('/incidents/i1/resolve'));
+    const planning = await serve((_req, res, _seen, index) => {
+        if (index === 0) return json(res, 503, { error: 'busy' });
+        json(res, 200, { monitors: [] });
+    });
+    assert.deepEqual(await client(planning.url).post('/automation/monitors/plan', {}), { monitors: [] });
+    assert.equal(planning.seen.length, 2);
+    // A dropped connection: the action is not repeated.
+    const dropped = await serve((req) => req.socket.destroy());
+    await assert.rejects(client(dropped.url).post('/incidents/i1/acknowledge', {}), (error: unknown) => error instanceof NetworkError);
+    assert.equal(dropped.seen.length, 1);
+
+    // A base URL with a path prefix: the route is matched after it.
+    const prefixed = await serve((_req, res, _seen, index) => (index === 0 ? json(res, 503, { error: 'busy' }) : json(res, 201, { id: 'm1' })));
+    assert.deepEqual(await client(`${prefixed.url}/api/v1`).post('/monitors', {}), { id: 'm1' });
+    assert.equal(prefixed.seen.length, 2);
+    assert.equal(prefixed.seen[0].url, '/api/v1/monitors');
+    assert.equal(prefixed.seen[1].headers['idempotency-key'], prefixed.seen[0].headers['idempotency-key']);
+});
+
+test('a non-deduped POST that times out is attempted once; 409 IDEMPOTENT_RESPONSE_WITHHELD is an error, not retried', async () => {
+    process.env.SUTRAMX_TIMEOUT = '0.3';
+    const slow = await serve((_req, res) => { setTimeout(() => json(res, 200, {}), 1000); });
+    await assert.rejects(client(slow.url).post('/monitors/m1/run-check', {}), (error: unknown) => error instanceof NetworkError && error.timedOut);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(slow.seen.length, 1);
+    delete process.env.SUTRAMX_TIMEOUT;
+
+    const withheld = await serve((_req, res) => json(res, 409, { error: 'The original response held a secret', code: 'IDEMPOTENT_RESPONSE_WITHHELD' }));
+    await assert.rejects(client(withheld.url).post('/monitors', {}), (error: unknown) => error instanceof ApiError && error.code === 'IDEMPOTENT_RESPONSE_WITHHELD');
+    assert.equal(withheld.seen.length, 1);
+
+    // IN_PROGRESS on a route the API does not dedupe is not waited on.
+    const inProgress = await serve((_req, res) => json(res, 409, { error: 'running', code: 'IDEMPOTENCY_REQUEST_IN_PROGRESS' }, { 'Retry-After': '1' }));
+    await assert.rejects(client(inProgress.url).post('/incidents/i1/resolve', {}), (error: unknown) => error instanceof ApiError && error.status === 409);
+    assert.equal(inProgress.seen.length, 1);
 });
 
 test('CM-2: per-attempt timeout from SUTRAMX_TIMEOUT; a timed-out POST is retried with its key; the overall deadline stops it', async () => {
