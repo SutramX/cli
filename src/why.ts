@@ -297,7 +297,7 @@ export function summaryLine(result: Omit<WhyResult, 'summary'>): string {
 // ─── fetching ────────────────────────────────────────────────────────────────
 
 function noteOf(what: string, error: unknown): string {
-    return `${what} could not be loaded: ${error instanceof ApiError ? `HTTP ${error.status}${error.code ? ` ${error.code}` : ''}` : (error as Error)?.message || String(error)}`;
+    return `${what} could not be loaded: ${error instanceof ApiError && error.status !== 0 ? `HTTP ${error.status}${error.code ? ` ${error.code}` : ''}` : (error as Error)?.message || String(error)}`;
 }
 
 async function optional<T>(work: Promise<T>, what: string, notes: string[]): Promise<T | null> {
