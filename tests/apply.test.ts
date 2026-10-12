@@ -247,7 +247,7 @@ test('CI: ${VAR} reads nothing unless SUTRAMX_ALLOWED_ENV lists it, and expanded
     const env = { CI: 'true', STAGING_URL: 'https://staging-7f3a9c.example.com/health', RUNNER_SECRET_NAME: 'ghp_runnerSecretValue123' };
 
     const denied = await sutramx(['plan', '-f', file], { env });
-    assert.equal(denied.code, 1);
+    assert.equal(denied.code, 8); // invalid sutramx.yml: usage/validation
     assert.match(denied.stderr, /STAGING_URL \(at monitors\[0\]\.url\)/);
     assert.match(denied.stderr, /RUNNER_SECRET_NAME/);
     assert.match(denied.stderr, /SUTRAMX_ALLOWED_ENV/);
@@ -266,7 +266,7 @@ test('CI: ${VAR} reads nothing unless SUTRAMX_ALLOWED_ENV lists it, and expanded
 
     echoPlan = 'error';
     const failed = await sutramx(['plan', '-f', file], { env: { ...env, SUTRAMX_ALLOWED_ENV: 'STAGING_*,RUNNER_SECRET_NAME' } });
-    assert.equal(failed.code, 1);
+    assert.equal(failed.code, 8); // API 422: usage/validation
     assert.match(failed.stderr, /Invalid monitor/);
     assert.ok(!failed.stderr.includes('staging-7f3a9c') && !failed.stderr.includes('runnerSecretValue'), failed.stderr);
 });
