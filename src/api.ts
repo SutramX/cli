@@ -74,6 +74,40 @@ export const PLAN_LIMIT_CODES: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * POST routes the API runs at most once per Idempotency-Key. Mirrors
+ * IDEMPOTENT_ROUTES in backend/src/middleware/idempotency.ts (path after the
+ * optional /v1 prefix, no trailing slash): keep the two lists in step. Only
+ * these POSTs are retried; every other POST (acknowledge, resolve, run-check,
+ * pause, test, rotate-secret, plan ...) is sent once, because the API would
+ * run it again.
+ */
+const IDEMPOTENT_POST_ROUTES: readonly RegExp[] = [
+    /^\/monitors$/,
+    /^\/monitors\/bulk$/,
+    /^\/monitors\/detect\/apply$/,
+    /^\/monitor-groups$/,
+    /^\/status\/pages$/,
+    /^\/status\/pages\/[^/]+\/monitors$/,
+    /^\/integrations\/[^/]+\/connections$/,
+    /^\/integrations\/[^/]+\/connect$/,
+    /^\/incidents$/,
+    /^\/incidents\/runbooks$/,
+    /^\/incidents\/[^/]+\/notes$/,
+    /^\/maintenance$/,
+    /^\/automation\/monitors\/apply$/,
+];
+
+/**
+ * True when a POST to `path` (no query string; an /api or /v1 prefix and a
+ * trailing slash are ignored) is one the API dedupes by Idempotency-Key.
+ */
+export function isIdempotentPostRoute(path: string): boolean {
+    let normalized = path.split(/[?#]/, 1)[0].replace(/^\/api(?=\/|$)/, '').replace(/^\/v1(?=\/|$)/, '');
+    if (normalized.length > 1) normalized = normalized.replace(/\/+$/, '');
+    return IDEMPOTENT_POST_ROUTES.some((pattern) => pattern.test(normalized));
+}
+
+/**
  * Retry-After as milliseconds: delta-seconds ("120") or an HTTP-date
  * ("Wed, 21 Oct 2026 07:28:00 GMT"). null when absent or unreadable.
  */
@@ -312,14 +346,20 @@ export class SutramXApi {
         };
         if (!options.anonymous) headers.Authorization = `Bearer ${this.apiKey}`;
         if (options.body !== undefined) headers['Content-Type'] = 'application/json';
-        // One key per logical POST, reused by every retry of it: the API then
-        // runs it once (older APIs ignore the header).
+        // One key per logical POST, reused by every retry of it: on the routes
+        // the API dedupes (IDEMPOTENT_POST_ROUTES) it then runs once; other
+        // routes and older APIs ignore the header.
         const idempotencyKey = method === 'POST' ? (options.idempotencyKey ?? randomUUID()) : undefined;
         if (idempotencyKey) headers['Idempotency-Key'] = idempotencyKey;
-        // Retries: 429 for any method (the request was refused, not run);
-        // 502/503/504, timeouts and network errors for idempotent methods and
-        // for POSTs that carry an Idempotency-Key.
-        const retrySafe = method === 'GET' || method === 'PUT' || method === 'DELETE' || idempotencyKey !== undefined;
+        const basePath = new URL(this.baseUrl).pathname.replace(/\/+$/, '');
+        const routePath = basePath && url.pathname.startsWith(`${basePath}/`) ? url.pathname.slice(basePath.length) : url.pathname;
+        const dedupedPost = idempotencyKey !== undefined && isIdempotentPostRoute(routePath);
+        // Retries (429, 502/503/504, timeouts, network errors): GET, PUT and
+        // DELETE, and POSTs the API dedupes by their Idempotency-Key. Any other
+        // POST is sent once (the server may already have run it); PATCH is
+        // retried on 429 only (refused, not run).
+        const retrySafe = method === 'GET' || method === 'PUT' || method === 'DELETE' || dedupedPost;
+        const retry429 = method !== 'POST' || dedupedPost;
         const perAttempt = timeoutFromEnv() ?? options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
         const deadline = Date.now() + perAttempt * DEADLINE_ATTEMPTS;
         const { fetch: fetchImpl, dispatcher } = await transport();
@@ -363,7 +403,7 @@ export class SutramXApi {
             text = undefined;
             const status = response.status;
             // The same POST is still running on the server: wait, then ask again with the same key.
-            if (status === 409 && idempotencyKey) {
+            if (status === 409 && dedupedPost) {
                 text = await this.read(response, host);
                 if (errorCodeOf(text) === 'IDEMPOTENCY_REQUEST_IN_PROGRESS' && inProgressWaits < 30) {
                     inProgressWaits += 1;
@@ -376,7 +416,7 @@ export class SutramXApi {
                     }
                 }
             }
-            if (status === 429 || (retrySafe && [502, 503, 504].includes(status))) {
+            if ((status === 429 && retry429) || (retrySafe && [502, 503, 504].includes(status))) {
                 text = await this.read(response, host);
                 // A plan limit can come as 429 (AI drafts): waiting does not help.
                 const planLimit = isPlanLimit(parseErrorBody(status, parseJson(text)));
