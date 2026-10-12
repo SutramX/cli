@@ -45,7 +45,7 @@ A key acts on the one workspace it was created in. Keys have one of three access
 | `sutramx uptime [--days 30] [--monitor <id or key>] [--json]` | uptime %, incidents, MTTR and health per monitor, plus SLO error budgets (`--days`: 7, 14, 30, 90); alias `report` |
 | `sutramx why <monitor or incident id> [--no-last-incident] [--json]` | why it is down, or why an alert fired: the verdict, whose fault it is (yours, external, our checker), each region's vote (blocked and inconclusive regions abstain), the quorum rule and whether it was met, the failure class, vendor signals and the 7/30-day flakiness score. Takes an incident id, or a monitor id, key, exact name or name/URL fragment; a monitor with an open incident explains that incident, otherwise its current state plus its most recent incident. Several matching monitors are listed (exit 1) instead of guessing; paused monitors and active maintenance windows are called out |
 | `sutramx maintenance list [--status ongoing] [--json]` | maintenance windows with their scope and recurrence (`--status`: scheduled, ongoing, completed, cancelled); alias `ls` |
-| `sutramx regions [--json]` | probe location codes (works without a key) |
+| `sutramx regions [--json]` | monitoring location codes (works without a key) |
 | `sutramx init [-f file] [--from-workspace] [--force]` | write a starter `sutramx.yml`, or one describing what exists now |
 | `sutramx validate [-f file]` | check the file locally |
 | `sutramx plan [--detailed-exitcode]` | what `apply` would change |

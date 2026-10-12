@@ -74,12 +74,12 @@ export const PLAN_LIMIT_CODES: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * POST routes the API runs at most once per Idempotency-Key. Mirrors
- * IDEMPOTENT_ROUTES in backend/src/middleware/idempotency.ts (path after the
- * optional /v1 prefix, no trailing slash): keep the two lists in step. Only
- * these POSTs are retried; every other POST (acknowledge, resolve, run-check,
- * pause, test, rotate-secret, plan ...) is sent once, because the API would
- * run it again.
+ * POST routes the API runs at most once per Idempotency-Key (path after the
+ * optional /v1 prefix, no trailing slash), as listed in the API reference. Only
+ * these POSTs and the read-only SAFE_POST_ROUTES are retried after a network
+ * error, a timeout or a 5xx; every other POST (acknowledge, resolve,
+ * run-check, pause, test, rotate-secret ...) is sent once, because the API
+ * would run it again. A 429 is retried for every request.
  */
 const IDEMPOTENT_POST_ROUTES: readonly RegExp[] = [
     /^\/monitors$/,
@@ -214,7 +214,7 @@ function retryableNetworkError(error: NetworkError): boolean {
     return !/redirect/i.test(error.message);
 }
 
-/** The backend answers errors in three shapes; normalise them. */
+/** The API answers errors in three shapes; normalise them. */
 export function parseErrorBody(status: number, body: unknown): ApiError {
     if (body && typeof body === 'object') {
         const record = body as Record<string, unknown>;
