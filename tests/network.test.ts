@@ -239,7 +239,9 @@ test('Retry-After: delta-seconds and HTTP-date; a 429 with an HTTP-date is retri
     assert.equal(parseRetryAfter(null, now), null);
 
     const { url, seen } = await serve((_req, res, _seen, index) => {
-        if (index === 0) return json(res, 429, { error: 'slow down' }, { 'Retry-After': new Date(Date.now() + 1000).toUTCString() });
+        // An HTTP-date has whole seconds: +2 s is always at least 1 s away
+        // (+1 s could truncate to a few milliseconds and make this flaky).
+        if (index === 0) return json(res, 429, { error: 'slow down' }, { 'Retry-After': new Date(Date.now() + 2000).toUTCString() });
         json(res, 200, { ok: true });
     });
     const api = new SutramXApi('sk_test', url);
@@ -247,7 +249,7 @@ test('Retry-After: delta-seconds and HTTP-date; a 429 with an HTTP-date is retri
     const started = Date.now();
     assert.deepEqual(await api.get('/monitors'), { ok: true });
     assert.equal(seen.length, 2);
-    assert.ok(Date.now() - started >= 200, 'waited for the HTTP-date');
+    assert.ok(Date.now() - started >= 900, 'waited for the HTTP-date');
 });
 
 test('a long Retry-After is reported, not slept through; plain-text 429 bodies are readable', async () => {
